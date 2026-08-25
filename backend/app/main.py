@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import seed, settings
 from .common import network_online, content_logging
@@ -42,3 +45,16 @@ for r in (system.router, inference.router, devices.router, catalog.router,
 @app.get("/")
 def root():
     return {"app": "Sarvam Edge Lab", "docs": "/docs", "health": "/health"}
+
+
+# ---- production single-container mode: serve the built SPA after all API routes ----
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str):
+        candidate = STATIC_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(STATIC_DIR / "index.html")
