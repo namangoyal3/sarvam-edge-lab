@@ -52,16 +52,15 @@ if not STATIC_DIR.exists():
 else:
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
-    API_PREFIXES = ("/inference", "/devices", "/models", "/policies", "/evals",
-                    "/telemetry", "/analytics", "/audit", "/reviews", "/system",
-                    "/docs", "/openapi.json", "/redoc")
+    API_SEGMENTS = {"inference", "devices", "models", "policies", "evals",
+                    "telemetry", "analytics", "audit", "reviews", "system"}
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    def spa_fallback(full_path: str):
-        # T9: unknown API-shaped paths get JSON 404, everything else gets the SPA
-        probe = "/" + full_path
-        if any(probe.startswith(p.rstrip("/") + "/" if p != "/" else p) or
-               probe == (p.rstrip("/") or probe) for p in API_PREFIXES):
+    def spa_fallback(full_path: str, request: Request):
+        # T9: API-shaped paths get a JSON 404; everything else gets the SPA
+        first = full_path.split("/", 1)[0]
+        wants_json = "application/json" in request.headers.get("accept", "")
+        if wants_json or first in API_SEGMENTS:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         candidate = STATIC_DIR / full_path
         if full_path and candidate.is_file():

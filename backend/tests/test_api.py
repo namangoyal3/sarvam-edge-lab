@@ -297,3 +297,17 @@ def test_unknown_api_path_returns_json_404_not_html():
     r = client.get("/inferenc")          # typo'd API path
     assert r.status_code == 404
     assert "detail" in r.json()          # JSON, not index.html
+
+
+def test_analytics_summary_returns_200_with_expected_shape():
+    r = client.get("/analytics/summary", headers=H_ADMIN)
+    assert r.status_code == 200
+    d = r.json()
+    assert "active_devices" in d["cards"]
+    assert "cost_per_successful_workflow_inr" in d["unit_economics"]
+    assert "routing_split" in d
+
+
+def test_spa_fallback_json_404_for_api_accept_header():
+    r = client.get("/inferenc", headers={"Accept": "application/json"})
+    assert r.status_code == 404 and "detail" in r.json()

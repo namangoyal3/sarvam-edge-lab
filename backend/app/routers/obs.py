@@ -108,7 +108,6 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
     local_n = path_counts.get("local", 0)
     cloud_n = path_counts.get("cloud_simulator", 0)
     queued_n = path_counts.get("queued_offline", 0)
-    queued = [{"success": 1}] * queued_n if queued_n else []
     errors = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND success=0", (tid,))["n"]
     schema_errs = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND error_code='E_SCHEMA_INVALID'", (tid,))["n"]
     queued_ok = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND execution_path='queued_offline' AND success=1", (tid,))["n"]
@@ -152,7 +151,7 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
     # ---- unit economics
     cc = {c["key"]: c["value"] for c in rows("SELECT * FROM cost_config")}
     monthly_vol = cc.get("monthly_request_volume", 50000)
-    cloud_share = cloud_n / max(local_n + cloud_n + len(queued), 1)
+    cloud_share = cloud_n / max(local_n + cloud_n + queued_n, 1)
     human_rate = reviews_total / max(total_n, 1)
     hardware_monthly = cc.get("hardware_cost_per_device_inr", 18000) / max(cc.get("amortize_months", 24), 1)
     monthly_cost = (hardware_monthly * max(len(active), 1)
@@ -172,11 +171,11 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
             "successful_workflows": row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND success=1", (tid,))["n"],
             "local_execution_pct": round(100 * local_n / max(total_n, 1), 1),
             "cloud_fallback_pct": round(100 * cloud_n / max(total_n, 1), 1),
-            "offline_queued_events": len(queued),
+            "offline_queued_events": queued_n,
             "p50_latency_ms": pct(succ_lat, 50),
             "p95_latency_ms": pct(succ_lat, 95),
             "validation_failure_rate_pct": round(100 * schema_errs / max(total_n, 1), 2),
-            "crash_error_count": len(errors),
+            "crash_error_count": errors,
             "current_model_version": (row("SELECT model_version v FROM devices WHERE model_version IS NOT NULL ORDER BY id LIMIT 1") or {}).get("v"),
             "pending_updates": row("SELECT COUNT(*) c FROM devices WHERE update_status!='up_to_date'", ())["c"],
         },
@@ -208,7 +207,7 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
         "series": series,
         "fallback_reasons": {("none" if not k else k): v for k, v in tally_sql("fallback_reason").items()} or {"none": total_n},
         "error_taxonomy": tally_sql("error_code") or {"ok": total_n},
-        "routing_split": {"local": local_n, "cloud_simulator": cloud_n, "queued_offline": len(queued)},
+        "routing_split": {"local": local_n, "cloud_simulator": cloud_n, "queued_offline": queued_n},
         "policy_decisions": path_counts,
         "device_health": [{"id": d["id"], "status": d["status"], "battery": d["battery_pct"],
                            "thermal": d["thermal"], "compat": d["compatibility"]} for d in devices],
