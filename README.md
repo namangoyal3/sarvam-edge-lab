@@ -32,10 +32,15 @@ library). Docker optional; native run needs no containers.
 
 ## Setup
 
-Requirements: Python 3.11+ (3.11 preferred), Node 18+, and `uv` (optional but recommended).
+**Live demo (Railway):** https://sarvam-edge-lab-production.up.railway.app
+One container serves both the API (`/docs`, `/api`-less paths) and the built UI.
+SQLite persists on a mounted Railway volume at `/data`. The demo database resets
+only if you delete the volume.
+
+Requirements for local run: Python 3.11+ (3.11 preferred), Node 18+, and `uv` (optional but recommended).
 
 ```bash
-git clone <this-repo> sarvam-edge-lab   # or copy the folder
+git clone https://github.com/namangoyal3/sarvam-edge-lab.git
 cd sarvam-edge-lab
 ./run.sh            # starts backend :8001 + frontend :5173, seeds demo data
 ```
@@ -56,6 +61,19 @@ Docker alternative:
 
 ```bash
 docker compose up --build     # backend :8001, frontend :5173
+```
+
+### Deploying to Railway
+
+The repo root `Dockerfile` builds the React UI and serves it from FastAPI as one
+container — one URL, no CORS setup:
+
+```bash
+railway init --name sarvam-edge-lab
+railway service sarvam-edge-lab     # link (name it whatever you like)
+railway up -d                       # build + deploy
+railway volume add -m /data         # persistent SQLite (SARVAM_DB_PATH=/data/...)
+railway domain                      # generates the public URL
 ```
 
 Open **http://localhost:5173**. First boot seeds tenants, users, 12 devices,
