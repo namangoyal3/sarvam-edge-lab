@@ -42,14 +42,12 @@ for r in (system.router, inference.router, devices.router, catalog.router,
     app.include_router(r)
 
 
-@app.get("/")
-def root():
-    return {"app": "Sarvam Edge Lab", "docs": "/docs", "health": "/health"}
-
-
-# ---- production single-container mode: serve the built SPA after all API routes ----
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-if STATIC_DIR.exists():
+if not STATIC_DIR.exists():
+    @app.get("/")
+    def root():
+        return {"app": "Sarvam Edge Lab", "docs": "/docs", "health": "/health"}
+else:
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
