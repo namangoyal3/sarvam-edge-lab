@@ -3,6 +3,7 @@ import json
 import time
 from .. import settings
 from . import triage as T
+from .logit_classifier import classify_via_logits
 from .triage import classify, jitter
 
 SIM_LABEL = "Simulated demo output"
@@ -55,11 +56,28 @@ def run_fixture(text: str, language_hint: str | None, seed: str) -> RuntimeResul
 
 # ---------------------------------------------------------------- real local mode
 
-LOCAL_PROMPT = """You are a support-ticket triage engine. Reply with ONLY a JSON object, no prose, with keys: category (one of billing|connectivity|account_access|performance|data_privacy|security|feature_request|other), urgency (low|medium|high|critical), language (en|hi|mixed-hi-en), suggested_next_action (short sentence), confidence (0-1), explanation (one sentence).
+LOCAL_PROMPT = f"""You are a support-ticket triage engine. Reply with ONLY a JSON object, no prose, with keys: category (one of billing|connectivity|account_access|performance|data_privacy|security|feature_request|other), urgency (one of low|medium|high|critical), language (one of en|hi|mixed-hi-en), suggested_next_action (short sentence), confidence (0-1), explanation (one sentence).
 
-Ticket: {text}
+Ticket: My card was charged twice for one order, refund please
+JSON: {{"category": "billing", "urgency": "high", "language": "en", "suggested_next_action": "Reverse the duplicate charge", "confidence": 0.9, "explanation": "Duplicate payment detected"}}
+Ticket: Net bar bar disconnect ho raha hai, jaldi fix karo
+JSON: {{"category": "connectivity", "urgency": "high", "language": "mixed-hi-en", "suggested_next_action": "Restart router and check line", "confidence": 0.9, "explanation": "Hinglish connectivity complaint"}}
+Ticket: मेरा पासवर्ड भूल गया, लॉगिन नहीं हो रहा
+JSON: {{"category": "account_access", "urgency": "medium", "language": "hi", "suggested_next_action": "Send password reset link", "confidence": 0.9, "explanation": "Hindi login problem"}}
+Ticket: App freezes whenever I open reports
+JSON: {{"category": "performance", "urgency": "medium", "language": "en", "suggested_next_action": "Collect logs and restart service", "confidence": 0.9, "explanation": "App freeze report"}}
+Ticket: Delete my account and all personal data immediately
+JSON: {{"category": "data_privacy", "urgency": "critical", "language": "en", "suggested_next_action": "Start DPA deletion workflow", "confidence": 0.9, "explanation": "Deletion request is high risk"}}
+Ticket: Someone hacked my account and made unauthorized transactions
+JSON: {{"category": "security", "urgency": "critical", "language": "en", "suggested_next_action": "Freeze account and page fraud desk", "confidence": 0.9, "explanation": "Account compromise"}}
+Ticket: It would be nice to add a dark mode option
+JSON: {{"category": "feature_request", "urgency": "low", "language": "en", "suggested_next_action": "Add to product backlog", "confidence": 0.9, "explanation": "Suggestion only"}}
+Ticket: What are your office timings?
+JSON: {{"category": "other", "urgency": "low", "language": "en", "suggested_next_action": "Reply with office hours", "confidence": 0.9, "explanation": "General query"}}
 
+Ticket: {{text}}
 JSON:"""
+LOCAL_PROMPT_END = "\nJSON:"
 
 
 # GBNF grammar: forces schema-valid JSON out of even heavily-quantised base models
@@ -83,16 +101,22 @@ def _get_grammar():
     return g
 
 
+def _get_llama():
+    llm = getattr(_get_llama, "_llm", None)
+    if llm is None:
+        from llama_cpp import Llama
+        llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, verbose=False)
+        _get_llama._llm = llm
+    return llm
+
+
 def _try_llama_cpp(text: str, language_hint: str) -> dict | None:
     try:
         from llama_cpp import Llama
     except ImportError:
         return None
-    llm = getattr(_try_llama_cpp, "_llm", None)
-    if llm is None:
-        llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, verbose=False)
-        _try_llama_cpp._llm = llm
-    prompt = LOCAL_PROMPT.format(text=text[:2000])
+    llm = _get_llama()
+    prompt = LOCAL_PROMPT.replace("{text}", text[:600]) + LOCAL_PROMPT_END
     # grammar-constrained greedy decode -> always parseable, enum-safe JSON
     out = llm(prompt, max_tokens=300, temperature=0.0, grammar=_get_grammar())
     raw = out["choices"][0]["text"]
@@ -108,7 +132,8 @@ def _try_transformers(text: str, language_hint: str) -> dict | None:
     if gen is None:
         gen = pipeline("text-generation", model=settings.MODEL_PATH, trust_remote_code=False)
         _try_transformers._pipe = gen
-    out = gen(LOCAL_PROMPT.format(text=text[:1500]), max_new_tokens=220, do_sample=False)
+    out = gen(LOCAL_PROMPT.replace("{text}", text[:600]) + LOCAL_PROMPT_END,
+              max_new_tokens=220, do_sample=False)
     return _parse_jsonish(out[0]["generated_text"][-600:])
 
 
@@ -131,10 +156,11 @@ def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
         fb.label = SIM_LABEL
         return fb
     t0 = _now_ms()
-    t0 = _now_ms()
     try:
         if status["runtime"] == "llama_cpp":
-            raw = _try_llama_cpp(text, language_hint)
+            raw = classify_via_logits(_get_llama(), text)
+            if raw is None:
+                raw = _try_llama_cpp(text, language_hint)
         else:
             raw = _try_transformers(text, language_hint)
         wall = _now_ms() - t0

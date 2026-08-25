@@ -214,6 +214,37 @@ cost per successful workflow**, not cost per inference.
 - Bounded offline queue (500); append-only audit events; bounded log queries.
 - **Not production-certified security.** No encryption at rest, no real authn.
 
+## Model accuracy: raising it honestly
+
+The current real-model number is low, and the README says so. Sarvam-1 IQ2_M
+(863 MB, 2-bit) fits the sub-1GB budget, but 2-bit quantization bounds task
+accuracy at 0.24 on the 26-case Indic triage set. Raw generation produced
+garbage JSON, so decoding now runs under a GBNF grammar: schema validity is
+1.0 by construction, not by luck. Critical-field gates (names, amounts, dates)
+still pass because extraction is deterministic. The system guarantee is
+"nothing wrong ships silently", not "the model is always right": any output
+below the policy `min_confidence` routes to the HITL human-review queue.
+
+Levers to raise accuracy, with their price:
+
+| Lever | Expected gain | Cost |
+|---|---|---|
+| Fine-tune on task data before quantization | Biggest jump; teach triage first, then compress | A training run plus a new artifact; re-run all evals |
+| Logit-forced classification | True softmax confidences; fixes the always-0.00 confidence problem | Runtime change only |
+| Requant to Q4_K_M (~1.3 GB) | Large accuracy lift | Breaks the 1GB device budget |
+| Few-shot exemplars in the prompt | Small lift, steadier category discipline | Free (a longer prompt) |
+| Self-consistency voting | Moderate lift on hard cases | About 3x latency per request |
+
+System-side levers keep weak-model output safe:
+
+- Rules x model agreement routing: ship when both engines agree, review when they diverge.
+- Confidence-gated HITL: already built; low confidence never auto-ships.
+- Gated evals as a regression contract: every change must clear category,
+  urgency, language, name, amount and date gates, not aggregate accuracy alone.
+
+> "Accuracy is bounded by the artifact. Trust is bounded by the system design.
+> Nothing wrong ships silently."
+
 ## Known limitations
 
 1. Simulation mode uses a keyword/rules engine, not a neural model. Its quality
