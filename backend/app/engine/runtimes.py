@@ -1,0 +1,143 @@
+"""Three inference runtimes. Every result carries honest labels."""
+import json
+import time
+from .. import settings
+from . import triage as T
+from .triage import classify, jitter
+
+SIM_LABEL = "Simulated demo output"
+CLOUD_LABEL = "Cloud simulator — not a real Sarvam cloud API"
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+class RuntimeResult:
+    def __init__(self, result: dict, validation_status: str, validation_errors: list,
+                 latency_ms: int, cost_inr: float, model_version: str, runtime_version: str,
+                 label: str, fallback_reason: str | None, raw_ok: bool):
+        self.result = result
+        self.validation_status = validation_status
+        self.validation_errors = validation_errors
+        self.latency_ms = latency_ms
+        self.cost_inr = cost_inr
+        self.model_version = model_version
+        self.runtime_version = runtime_version
+        self.label = label
+        self.fallback_reason = fallback_reason
+        self.raw_ok = raw_ok
+
+
+def _safe(result_dict: dict, seed: str, cost_inr: float, mver: str, rver: str, label: str) -> RuntimeResult:
+    from ..schemas import validate_triage
+    parsed, errs = validate_triage({k: v for k, v in result_dict.items() if not k.startswith("_")})
+    if parsed is None:
+        fb = classify("fallback default ticket")
+        return RuntimeResult(
+            {k: fb[k] for k in ("category", "urgency", "language", "suggested_next_action",
+                                "confidence", "explanation")},
+            "invalid", errs, jitter(45, seed),
+            0.0, mver + "+fixture-fallback", rver, SIM_LABEL, f"model_output_invalid ({'; '.join(errs[:2])})",
+            raw_ok=False)
+    return RuntimeResult(
+        parsed.model_dump(), "valid", [],
+        jitter(55, seed), cost_inr, mver, rver, label, None, raw_ok=True)
+
+
+# ---------------------------------------------------------------- fixture mode
+
+def run_fixture(text: str, language_hint: str | None, seed: str) -> RuntimeResult:
+    out = classify(text, language_hint)
+    return _safe(out, seed, cost_inr=0.0, mver="rules-engine-v1.4.0",
+                 rver="python-embedded-1.0", label=SIM_LABEL)
+
+
+# ---------------------------------------------------------------- real local mode
+
+LOCAL_PROMPT = """You are a support-ticket triage engine. Reply with ONLY a JSON object, no prose, with keys: category (one of billing|connectivity|account_access|performance|data_privacy|security|feature_request|other), urgency (low|medium|high|critical), language (en|hi|mixed-hi-en), suggested_next_action (short sentence), confidence (0-1), explanation (one sentence).
+
+Ticket: {text}
+
+JSON:"""
+
+
+def _try_llama_cpp(text: str, language_hint: str) -> dict | None:
+    try:
+        from llama_cpp import Llama
+    except ImportError:
+        return None
+    llm = getattr(_try_llama_cpp, "_llm", None)
+    if llm is None:
+        llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, verbose=False)
+        _try_llama_cpp._llm = llm
+    prompt = LOCAL_PROMPT.format(text=text[:2000])
+    out = llm(prompt, max_tokens=220, temperature=0.0, stop=["\n\n"])
+    raw = out["choices"][0]["text"]
+    return _parse_jsonish(raw)
+
+
+def _try_transformers(text: str, language_hint: str) -> dict | None:
+    try:
+        from transformers import pipeline
+    except ImportError:
+        return None
+    gen = getattr(_try_transformers, "_pipe", None)
+    if gen is None:
+        gen = pipeline("text-generation", model=settings.MODEL_PATH, trust_remote_code=False)
+        _try_transformers._pipe = gen
+    out = gen(LOCAL_PROMPT.format(text=text[:1500]), max_new_tokens=220, do_sample=False)
+    return _parse_jsonish(out[0]["generated_text"][-600:])
+
+
+def _parse_jsonish(raw: str) -> dict | None:
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        return json.loads(raw[start:end + 1])
+    except Exception:
+        return None
+
+
+def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
+    status = settings.active_mode()
+    if status["mode"] != "real_local":
+        fb = run_fixture(text, language_hint, seed)
+        fb.fallback_reason = status.get("reason", "local runtime unavailable")
+        fb.label = SIM_LABEL
+        return fb
+    t0 = _now_ms()
+    try:
+        if status["runtime"] == "llama_cpp":
+            raw = _try_llama_cpp(text, language_hint)
+        else:
+            raw = _try_transformers(text, language_hint)
+        wall = _now_ms() - t0
+        if raw is None:
+            raise ValueError("model did not emit parseable JSON")
+        merged = {**classify(text, language_hint), **raw}   # fill missing keys from rules
+        res = _safe(merged, seed, cost_inr=0.0,
+                    mver=f"Sarvam-1@{settings.MODEL_PATH.split('/')[-1]}",
+                    rver=status["runtime"], label="Real local model")
+        res.latency_ms = max(wall, 1)
+        return res
+    except Exception as e:
+        fb = run_fixture(text, language_hint, seed)
+        fb.fallback_reason = f"local_model_failed ({type(e).__name__})"
+        return fb
+
+
+# ---------------------------------------------------------------- cloud simulator
+
+def run_cloud_sim(text: str, language_hint: str, seed: str, cost_per_req: float) -> RuntimeResult:
+    import random
+    rng = random.Random(int(seed.encode().hex(), 16))
+    out = classify(text, language_hint)
+    out["confidence"] = min(0.98, round(out["confidence"] + 0.06, 2))
+    out["explanation"] = "[cloud-sim quality uplift] " + out["explanation"]
+    res = _safe(out, seed, cost_inr=round(cost_per_req, 4),
+                mver="sarvam-cloud-large-sim-v3", rver="cloud-simulator-1.1", label=CLOUD_LABEL)
+    res.latency_ms = rng.randint(900, 1600)
+    return res

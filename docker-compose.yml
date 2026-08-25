@@ -1,0 +1,19 @@
+services:
+  backend:
+    build: ./backend
+    ports: ["8001:8000"]
+    environment:
+      SARVAM_MODEL_PATH: ""          # mount a GGUF artifact + set this to enable real local mode
+      DEMO_CONTENT_LOGGING: "0"
+    volumes:
+      - backend-data:/app/data
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_PROXY: http://backend:8000
+    ports: ["5173:5173"]
+    depends_on: [backend]
+
+volumes:
+  backend-data:
