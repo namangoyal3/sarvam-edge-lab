@@ -16,7 +16,7 @@ chk "$(curl -s $H -X POST $U/inference -d '{"text":"app slow","force_path":"clou
 curl -s $H -X POST $U/system/network -d '{"online":false}' > /dev/null
 Q=$(curl -s $H -X POST $U/inference -d '{"text":"net down test","force_path":"cloud","policy_id":"p-balanced"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')
 chk "$Q" "queued_offline" "offline queueing"
-REC=$(curl -s --max-time 180 $H -X POST $U/devices/DEV-1002/reconnect | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["queued_jobs_executed"]>=1 and d["online"]!=False)')
+REC=$(curl -s --max-time 180 $H -X POST $U/devices/DEV-1002/reconnect | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["queued_jobs_executed"]>=1 and d["status"]=="online")')
 chk "$REC" "True" "reconnect drains"
 # 6 HITL flow
 LR=$(curl -s $H -X POST $U/inference -d '{"text":"[low] odd ticket","device_id":"DEV-1002"}')
