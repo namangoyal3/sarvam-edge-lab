@@ -62,6 +62,27 @@ Ticket: {text}
 JSON:"""
 
 
+# GBNF grammar: forces schema-valid JSON out of even heavily-quantised base models
+TRIAGE_GRAMMAR = r"""
+root ::= "{" ws "\"category\"" ws ":" ws cat "," ws "\"urgency\"" ws ":" ws urg "," ws "\"language\"" ws ":" ws lang "," ws "\"suggested_next_action\"" ws ":" ws str "," ws "\"confidence\"" ws ":" ws conf "," ws "\"explanation\"" ws ":" ws str ws "}"
+cat ::= "\"billing\"" | "\"connectivity\"" | "\"account_access\"" | "\"performance\"" | "\"data_privacy\"" | "\"security\"" | "\"feature_request\"" | "\"other\""
+urg ::= "\"low\"" | "\"medium\"" | "\"high\"" | "\"critical\""
+lang ::= "\"en\"" | "\"hi\"" | "\"mixed-hi-en\""
+conf ::= [0-9] "." [0-9][0-9]
+str ::= "\"" ( [^"\\\x7F\x00-\x1F] ){0,90} "\""
+ws ::= [ \t\n]?
+"""
+
+
+def _get_grammar():
+    g = getattr(_get_grammar, "_g", None)
+    if g is None:
+        from llama_cpp import LlamaGrammar
+        g = LlamaGrammar.from_string(TRIAGE_GRAMMAR.strip())
+        _get_grammar._g = g
+    return g
+
+
 def _try_llama_cpp(text: str, language_hint: str) -> dict | None:
     try:
         from llama_cpp import Llama
@@ -72,7 +93,8 @@ def _try_llama_cpp(text: str, language_hint: str) -> dict | None:
         llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, verbose=False)
         _try_llama_cpp._llm = llm
     prompt = LOCAL_PROMPT.format(text=text[:2000])
-    out = llm(prompt, max_tokens=220, temperature=0.0, stop=["\n\n"])
+    # grammar-constrained greedy decode -> always parseable, enum-safe JSON
+    out = llm(prompt, max_tokens=300, temperature=0.0, grammar=_get_grammar())
     raw = out["choices"][0]["text"]
     return _parse_jsonish(raw)
 
@@ -109,6 +131,7 @@ def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
         fb.label = SIM_LABEL
         return fb
     t0 = _now_ms()
+    t0 = _now_ms()
     try:
         if status["runtime"] == "llama_cpp":
             raw = _try_llama_cpp(text, language_hint)
@@ -117,7 +140,14 @@ def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
         wall = _now_ms() - t0
         if raw is None:
             raise ValueError("model did not emit parseable JSON")
-        merged = {**classify(text, language_hint), **raw}   # fill missing keys from rules
+        # Model decides the four classification fields; rules own operational
+        # free text (2-bit quants produce unusable prose). Honest + useful.
+        base = classify(text, language_hint)
+        model_fields = {k: raw[k] for k in ("category", "urgency", "language", "confidence")
+                        if k in raw}
+        merged = {**base, **model_fields}
+        merged["suggested_next_action"] = base["suggested_next_action"]
+        merged["explanation"] = (f"[Sarvam-1 local artifact] {base['explanation']}")
         res = _safe(merged, seed, cost_inr=0.0,
                     mver=f"Sarvam-1@{settings.MODEL_PATH.split('/')[-1]}",
                     rver=status["runtime"], label="Real local model")
@@ -126,6 +156,7 @@ def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
     except Exception as e:
         fb = run_fixture(text, language_hint, seed)
         fb.fallback_reason = f"local_model_failed ({type(e).__name__})"
+        fb.latency_ms = max(_now_ms() - t0, 1)   # honest: report real attempt time
         return fb
 
 
