@@ -31,8 +31,7 @@ def _logprob_of(logits: np.ndarray, tok: int) -> float:
     return float(logits[tok] - lse)
 
 
-def _branch_logprob(llm, variant: str) -> float:
-    toks = llm.tokenize(variant.encode("utf-8"), add_bos=False)
+def _branch_logprob(llm, toks) -> float:
     lp = 0.0
     for t in toks:
         lp += _logprob_of(_last_logits(llm), int(t))
@@ -40,13 +39,45 @@ def _branch_logprob(llm, variant: str) -> float:
     return lp
 
 
+def _cont_toks(llm, head: str, variant: str):
+    """Token sequences of `variant` continuing `head`. Quantized models split
+    option words across different BPE paths (e.g. 'b'+'illing' vs 'bi'+'lling');
+    returning several plausible segmentations lets _score_field take the max,
+    otherwise one strong single-path competitor wins unfairly."""
+    hv = llm.tokenize((head + variant).encode("utf-8"), add_bos=False)
+    h = llm.tokenize(head.encode("utf-8"), add_bos=False)
+    n = 0
+    for a, b in zip(h, hv):
+        if a != b:
+            break
+        n += 1
+    joint = [int(t) for t in hv[n:]]
+    stand = [int(t) for t in llm.tokenize(variant.encode("utf-8"), add_bos=False)]
+    out = [joint]
+    if stand != joint:
+        out.append(stand)
+    if len(variant) > 1:
+        f = llm.tokenize(variant[0].encode("utf-8"), add_bos=False)
+        r = llm.tokenize(variant[1:].encode("utf-8"), add_bos=False)
+        split = [int(t) for t in f] + [int(t) for t in r]
+        if split not in out:
+            out.append(split)
+    return out
+
+
 def _score_field(llm, head: str, options) -> tuple[str, float]:
+    # fresh prefill per SEGMENTATION (codex review: alternatives must not start
+    # from a context mutated by earlier ones). State restore stays off — Metal
+    # corruption verified empirically.
     prefix = llm.tokenize(head.encode("utf-8"), add_bos=True)
     raw = {}
     for opt in options:
-        llm.reset()
-        llm.eval(prefix)
-        raw[opt] = max(_branch_logprob(llm, v) for v in (opt, " " + opt))
+        best = -1e9
+        for toks in _cont_toks(llm, head, opt):
+            llm.reset()
+            llm.eval(prefix)
+            best = max(best, _branch_logprob(llm, toks))
+        raw[opt] = best
     mx = max(raw.values())
     ex = {k: float(np.exp(v - mx)) for k, v in raw.items()}
     z = sum(ex.values())
@@ -57,13 +88,16 @@ def _score_field(llm, head: str, options) -> tuple[str, float]:
 
 def classify_via_logits(llm, text: str) -> dict | None:
     try:
-        t = text[:600]
-        cat, p_cat = _score_field(
-            llm, f"Support ticket: {t}\nThe category of this ticket is ", CATEGORIES)
-        urg, p_urg = _score_field(
-            llm, f"Support ticket: {t}\nThe urgency of this ticket is ", URGENCIES)
-        lang, p_lang = _score_field(
-            llm, f"Support ticket: {t}\nThe language of this ticket is ", LANGUAGES)
+        from .runtimes import LOCAL_PROMPT
+        # strip trailing "JSON:" duplication: the few-shot header already ends
+        # with it; appending LOCAL_PROMPT_END produced JSON:\nJSON:
+        base = LOCAL_PROMPT.replace("{text}", text[:600])
+        cat_head = base + ' {"category": "'
+        cat, p_cat = _score_field(llm, cat_head, CATEGORIES)
+        urg_head = cat_head + cat + '", "urgency": "'
+        urg, p_urg = _score_field(llm, urg_head, URGENCIES)
+        lang_head = urg_head + urg + '", "language": "'
+        lang, p_lang = _score_field(llm, lang_head, LANGUAGES)
         return {"category": cat, "urgency": urg, "language": lang,
                 "confidence": round((p_cat + p_urg + p_lang) / 3.0, 3)}
     except Exception:

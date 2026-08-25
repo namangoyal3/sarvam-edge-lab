@@ -1,5 +1,6 @@
 """Three inference runtimes. Every result carries honest labels."""
 import json
+import os
 import time
 from .. import settings
 from . import triage as T
@@ -105,7 +106,8 @@ def _get_llama():
     llm = getattr(_get_llama, "_llm", None)
     if llm is None:
         from llama_cpp import Llama
-        llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, verbose=False)
+        llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, verbose=False,
+                    n_gpu_layers=int(os.environ.get("SARVAM_GPU_LAYERS", "-1")))
         _get_llama._llm = llm
     return llm
 
@@ -158,8 +160,15 @@ def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
     t0 = _now_ms()
     try:
         if status["runtime"] == "llama_cpp":
-            raw = classify_via_logits(_get_llama(), text)
-            if raw is None:
+            # ponytail: grammar generation is primary (2.5s, empirically better
+            # categories). Logit scoring is experimental — its branch-sum metric
+            # disagrees with greedy decoding on 2-bit quants and measured worse;
+            # enable with SARVAM_LOGITS_SCORING=1.
+            if os.environ.get("SARVAM_LOGITS_SCORING") == "1":
+                raw = classify_via_logits(_get_llama(), text)
+                if raw is None:
+                    raw = _try_llama_cpp(text, language_hint)
+            else:
                 raw = _try_llama_cpp(text, language_hint)
         else:
             raw = _try_transformers(text, language_hint)
