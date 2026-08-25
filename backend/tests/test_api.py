@@ -9,6 +9,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
+from app.db import row  # noqa: E402
 
 client = TestClient(app)
 client.__enter__()  # start lifespan -> seeds DB
@@ -183,3 +184,116 @@ def test_content_logging_default_off():
     t = client.get("/telemetry?limit=5").json()
     if not t["content_logging"]:
         assert all(e["content_preview"] is None for e in t["events"])
+
+
+# ---------------- eng-review fix regression tests (T1-T7, T9) ----------------
+
+def test_token_gate_blocks_when_env_set(monkeypatch):
+    monkeypatch.setenv("DEMO_API_TOKEN", "s3cret")
+    r = client.get("/devices")                                   # no token -> 401
+    assert r.status_code == 401
+    r = client.get("/devices", headers={**H_ADMIN, "X-Demo-Token": "wrong"})
+    assert r.status_code == 401
+    r = client.get("/devices", headers={**H_ADMIN, "X-Demo-Token": "s3cret"})
+    assert r.status_code == 200
+    r = client.get("/health")                                    # health stays open
+    assert r.status_code == 200
+    r = client.get("/models?token=s3cret")                       # query param works (diagnostics links)
+    assert r.status_code == 200
+
+
+def test_approve_updates_request_status():
+    r = client.post("/inference", json={"text": "[low] billing urgent issue"}, headers=H_ADMIN).json()
+    assert r["status"] == "needs_review"
+    task = next(x for x in client.get("/reviews?status=open").json()
+                if x["correlation_id"] == r["correlation_id"])
+    client.post(f"/reviews/{task['id']}/action",
+                json={"action": "approve", "reason": "verified ok"}, headers=H_REVIEWER)
+    got = client.get(f"/inference/{r['request_id']}").json()
+    assert got["request"]["status"] == "completed"
+
+
+def test_reject_marks_request_rejected():
+    r = client.post("/inference", json={"text": "[low] weird case"}, headers=H_ADMIN).json()
+    task = next(x for x in client.get("/reviews?status=open").json()
+                if x["correlation_id"] == r["correlation_id"])
+    client.post(f"/reviews/{task['id']}/action",
+                json={"action": "reject", "reason": "spam"}, headers=H_REVIEWER)
+    got = client.get(f"/inference/{r['request_id']}").json()
+    assert got["request"]["status"] == "rejected"
+
+
+def test_policy_resync_scoped_to_device_tenant():
+    # create an indmart policy with a stale timestamp; reconnect an acme device
+    p = client.post("/policies", json={"name": "IndMart Local", "mode": "local_only"},
+                    headers={**H_ADMIN, "X-Tenant-ID": "t-indmart"}).json()
+    from app.db import db
+    db().execute("UPDATE policies SET last_synced_at='2020-01-01T00:00:00+00:00' WHERE id=?", (p["id"],))
+    db().commit()
+    before = client.get("/policies", headers={**H_ADMIN, "X-Tenant-ID": "t-indmart"}).json()
+    indmart_ts = next(x["last_synced_at"] for x in before if x["id"] == p["id"])
+    client.post("/devices/DEV-1001/reconnect", headers=H_ADMIN)   # acme device
+    after = client.get("/policies", headers={**H_ADMIN, "X-Tenant-ID": "t-indmart"}).json()
+    assert next(x["last_synced_at"] for x in after if x["id"] == p["id"]) == indmart_ts
+
+
+def test_queue_drop_is_audited_when_full():
+    from app.db import db
+    from app.seed import utcnow
+    for i in range(500):
+        db().execute("INSERT INTO offline_queue(idempotency_key,payload_type,payload,state,created_at) "
+                   "VALUES(?,?,?,'pending',?)", (f"filler_{i}", "telemetry_sync", "{}", utcnow()))
+    db().commit()
+    from app.common import enqueue
+    res = enqueue("telemetry_sync", {"event_id": "evt_new"}, key="evt_new")
+    assert res["dropped_oldest"] >= 1
+    audited = row("SELECT 1 FROM audit_events WHERE action='offline_queue.dropped'")
+    assert audited is not None
+    # cleanup fillers so other tests are unaffected
+    db().execute("DELETE FROM offline_queue WHERE idempotency_key LIKE 'filler_%'")
+    db().commit()
+
+
+def test_drain_rerun_does_not_duplicate_telemetry_or_reviews():
+    client.post("/system/network", json={"online": False}, headers=H_ADMIN)
+    r1 = client.post("/inference", json={"text": "[low] odd ticket", "device_id": "DEV-1002",
+                                         "policy_id": "p-balanced", "force_path": "cloud"},
+                     headers=H_ADMIN).json()
+    assert r1["status"] == "queued_offline"
+    rec = client.post("/devices/DEV-1002/reconnect", headers=H_ADMIN).json()
+    assert rec["queued_jobs_executed"] >= 1
+    corr = r1["correlation_id"]
+    telem_before = len([e for e in client.get("/telemetry?limit=500").json()["events"]
+                        if e["correlation_id"] == corr])
+    reviews_before = len(client.get("/reviews").json())
+    # simulate a crash-after-success: reset queue item and drain again
+    from app.db import db
+    db().execute("UPDATE offline_queue SET state='pending' WHERE payload_type='inference_job' AND payload LIKE ?",
+               (f'%{r1["request_id"]}%',))
+    db().commit()
+    client.post("/devices/DEV-1002/reconnect", headers=H_ADMIN)
+    telem_after = len([e for e in client.get("/telemetry?limit=500").json()["events"]
+                       if e["correlation_id"] == corr])
+    reviews_after = len(client.get("/reviews").json())
+    assert telem_after == telem_before
+    assert reviews_after == reviews_before
+
+
+def test_review_edit_sets_superseded_by_and_new_version():
+    r = client.post("/inference", json={"text": "[low] my name is Rohit billing"}, headers=H_ADMIN).json()
+    task = next(x for x in client.get("/reviews?status=open").json()
+                if x["correlation_id"] == r["correlation_id"])
+    acted = client.post(f"/reviews/{task['id']}/action",
+                        json={"action": "edit", "reason": "wrong category",
+                              "corrected": {"category": "account_access", "urgency": "high"}},
+                        headers=H_REVIEWER).json()
+    assert acted["status"] == "resolved"
+    results = client.get(f"/inference/{r['request_id']}").json()["results"]
+    assert len(results) >= 2
+    assert any(res["superseded_by"] for res in results[:-1])   # old version linked to new
+
+
+def test_unknown_api_path_returns_json_404_not_html():
+    r = client.get("/inferenc")          # typo'd API path
+    assert r.status_code == 404
+    assert "detail" in r.json()          # JSON, not index.html

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ..common import ctx, network_online
 from ..db import db, row, rows, tx
+from ..engine import triage as T
 from ..engine.runtimes import run_fixture, run_cloud_sim, run_local
 from ..schemas import validate_triage
 from ..seed import utcnow, rid
@@ -89,10 +90,10 @@ def run_eval(mode: str = Body(default="fixture", embed=True),
                 gates["urgency_floor"] = True
             crit_out = {}
             crit_gates = {}
-            extracted = res.result.pop("_critical", {}) or {}
+            extracted = T.extract_critical(case["text"])   # T6: single source of truth in engine
             gate_name = {"person": "names_gate", "amount": "amounts_gate", "date": "dates_gate"}
             for field, want in (case.get("critical") or {}).items():
-                got = _find_critical(parsed, extracted, case["text"], field, want)
+                got = extracted.get(field)
                 crit_out[field] = got
                 crit_gates[gate_name.get(field, f"{field}_gate")] = _field_match(field, got, want)
             if any(k.startswith("person") for k in case.get("critical", {})):
@@ -161,28 +162,6 @@ def run_eval(mode: str = Body(default="fixture", embed=True),
                     utcnow(), int((time.time() - t0) * 1000)))
     return {"eval_run_id": run_id, "metrics": metrics, "gates": gates,
             "breakdowns": breakdowns, "per_case": per_case}
-
-
-def _find_critical(parsed, extracted, text, field, want):
-    if field in extracted:
-        return extracted[field]
-    low = text.lower()
-    if field == "amount":
-        import re
-        m = re.search(r"(?:₹|rs\.?|inr)\s?([\d,]+)", low)
-        return f"₹{m.group(1).replace(',', '')}" if m else None
-    if field == "date":
-        import re
-        m = re.search(r"\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b|\b(today|tomorrow|kal|aaj)\b", low)
-        return (m.group(1) or m.group(2)).lower() if m else None
-    if field == "person":
-        import re
-        nm = re.search(r"(?:my name is|i am|mera naam|mera nam)", text, re.I)
-        if not nm:
-            return None
-        m = re.search(r"([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2})", text[nm.end():])
-        return m.group(1).strip().title() if m else None
-    return None
 
 
 def _field_match(field, got, want):

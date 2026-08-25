@@ -99,14 +99,26 @@ def audit_log(limit: int = 150, action: str | None = None):
 def analytics_summary(ctxinfo: dict = Depends(ctx)):
     tid = ctxinfo["tenant_id"]
     gen_share = row("SELECT AVG(is_generated) g, COUNT(*) n FROM telemetry_events WHERE tenant_id=?", (tid,))
-    telem_all = rows("SELECT * FROM telemetry_events WHERE tenant_id=?", (tid,))
-    succ_lat = sorted(e["latency_ms"] for e in telem_all if e["success"] and e["latency_ms"])
-    local_n = sum(1 for e in telem_all if e["execution_path"] == "local")
-    cloud_n = sum(1 for e in telem_all if e["execution_path"] == "cloud_simulator")
-    queued = [e for e in telem_all if e["execution_path"] == "queued_offline"]
-    errors = [e for e in telem_all if not e["success"]]
+    # T8: aggregate in SQLite; pull only the columns Python genuinely needs
+    total_n = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=?", (tid,))["n"]
+    succ_lat = [r["latency_ms"] for r in rows(
+        "SELECT latency_ms FROM telemetry_events WHERE tenant_id=? AND success=1 AND latency_ms>0", (tid,))]
+    path_counts = {r["k"]: r["n"] for r in rows(
+        "SELECT execution_path k, COUNT(*) n FROM telemetry_events WHERE tenant_id=? GROUP BY execution_path", (tid,))}
+    local_n = path_counts.get("local", 0)
+    cloud_n = path_counts.get("cloud_simulator", 0)
+    queued_n = path_counts.get("queued_offline", 0)
+    queued = [{"success": 1}] * queued_n if queued_n else []
+    errors = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND success=0", (tid,))["n"]
+    schema_errs = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND error_code='E_SCHEMA_INVALID'", (tid,))["n"]
+    queued_ok = row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND execution_path='queued_offline' AND success=1", (tid,))["n"]
     devices = rows("SELECT * FROM devices WHERE tenant_id=?", (tid,))
     active = [d for d in devices if d["status"] != "disabled"]
+
+    def tally_sql(col):
+        return {r["k"]: r["n"] for r in rows(
+            f"SELECT {col} k, COUNT(*) n FROM telemetry_events WHERE tenant_id=? GROUP BY {col} ORDER BY n DESC LIMIT 8", (tid,))
+            if r["k"]}
 
     def pct(v, p):
         s = sorted(v)
@@ -135,13 +147,13 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
     compat_ok = sum(1 for d in devices if (d.get("compatibility_detail") or {}).get("status") == "compatible")
 
     # ---- time series (last 7 days buckets by day-hour blocks)
-    series = _series(telem_all)
+    series = _series_sql(tid)
 
     # ---- unit economics
     cc = {c["key"]: c["value"] for c in rows("SELECT * FROM cost_config")}
     monthly_vol = cc.get("monthly_request_volume", 50000)
     cloud_share = cloud_n / max(local_n + cloud_n + len(queued), 1)
-    human_rate = reviews_total / max(sum(1 for e in telem_all), 1)
+    human_rate = reviews_total / max(total_n, 1)
     hardware_monthly = cc.get("hardware_cost_per_device_inr", 18000) / max(cc.get("amortize_months", 24), 1)
     monthly_cost = (hardware_monthly * max(len(active), 1)
                     + cc.get("local_ops_cost_device_month_inr", 40) * max(len(active), 1)
@@ -157,13 +169,13 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
         "policy_stale": is_policy_stale(),
         "cards": {
             "active_devices": len(active),
-            "successful_workflows": sum(1 for e in telem_all if e["success"]),
-            "local_execution_pct": round(100 * local_n / max(len(telem_all), 1), 1),
-            "cloud_fallback_pct": round(100 * cloud_n / max(len(telem_all), 1), 1),
+            "successful_workflows": row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND success=1", (tid,))["n"],
+            "local_execution_pct": round(100 * local_n / max(total_n, 1), 1),
+            "cloud_fallback_pct": round(100 * cloud_n / max(total_n, 1), 1),
             "offline_queued_events": len(queued),
             "p50_latency_ms": pct(succ_lat, 50),
             "p95_latency_ms": pct(succ_lat, 95),
-            "validation_failure_rate_pct": round(100 * sum(1 for e in errors if e["error_code"] == "E_SCHEMA_INVALID") / max(len(telem_all), 1), 2),
+            "validation_failure_rate_pct": round(100 * schema_errs / max(total_n, 1), 2),
             "crash_error_count": len(errors),
             "current_model_version": (row("SELECT model_version v FROM devices WHERE model_version IS NOT NULL ORDER BY id LIMIT 1") or {}).get("v"),
             "pending_updates": row("SELECT COUNT(*) c FROM devices WHERE update_status!='up_to_date'", ())["c"],
@@ -171,16 +183,16 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
         "product_metrics": {
             "activation_to_first_success_min": round(sorted(atfs)[len(atfs) // 2], 1) if atfs else None,
             "workflows_per_active_device_day": round(
-                sum(1 for e in telem_all if e["success"]) / 7 / max(len(active), 1), 1),
-            "local_execution_pct": round(100 * local_n / max(len(telem_all), 1), 1),
-            "cloud_fallback_pct": round(100 * cloud_n / max(len(telem_all), 1), 1),
-            "offline_success_pct": round(100 * sum(1 for e in queued if e["success"]) / max(len(queued), 1), 1),
+                row("SELECT COUNT(*) n FROM telemetry_events WHERE tenant_id=? AND success=1", (tid,))["n"] / 7 / max(len(active), 1), 1),
+            "local_execution_pct": round(100 * local_n / max(total_n, 1), 1),
+            "cloud_fallback_pct": round(100 * cloud_n / max(total_n, 1), 1),
+            "offline_success_pct": 100.0 if queued_n == 0 else round(100 * queued_ok / max(queued_n, 1), 1),
             "p50_ms": pct(succ_lat, 50), "p95_ms": pct(succ_lat, 95),
-            "schema_validation_pct": round(100 - 100 * sum(1 for e in errors if e["error_code"] == "E_SCHEMA_INVALID") / max(len(telem_all), 1), 2),
+            "schema_validation_pct": round(100 - 100 * schema_errs / max(total_n, 1), 2),
             "critical_field_accuracy_note": "run an eval to compute live; latest eval gate shown below",
             "latest_eval_verdict": (row("SELECT verdict v FROM eval_runs ORDER BY started_at DESC LIMIT 1") or {}).get("v"),
             "repeat_usage_pct": round(_repeat_usage(tid), 1),
-            "crash_error_rate_pct": round(100 * len(errors) / max(len(telem_all), 1), 2),
+            "crash_error_rate_pct": round(100 * errors / max(total_n, 1), 2),
             "update_success_pct": round(100 * sum(1 for u in updates if u["state"] == 'success') / max(len(updates), 1), 1),
             "rollback_rate_pct": round(100 * len(rollbacks) / max(len(updates) + len(rollbacks), 1), 1),
             "hitl_escalation_pct": round(100 * reviews_total / max(row("SELECT COUNT(*) c FROM inference_requests WHERE tenant_id=?", (tid,))["c"], 1), 1),
@@ -194,15 +206,15 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
             "formula": "(hardware_amortised + ops + cloud*share + human*ticket_rate + updates) / successful_workflows",
         },
         "series": series,
-        "fallback_reasons": _tally([e["fallback_reason"] or "none" for e in telem_all]),
-        "error_taxonomy": _tally([e["error_code"] or "ok" for e in telem_all]),
+        "fallback_reasons": {("none" if not k else k): v for k, v in tally_sql("fallback_reason").items()} or {"none": total_n},
+        "error_taxonomy": tally_sql("error_code") or {"ok": total_n},
         "routing_split": {"local": local_n, "cloud_simulator": cloud_n, "queued_offline": len(queued)},
-        "policy_decisions": _tally([e["execution_path"] for e in telem_all]),
+        "policy_decisions": path_counts,
         "device_health": [{"id": d["id"], "status": d["status"], "battery": d["battery_pct"],
                            "thermal": d["thermal"], "compat": d["compatibility"]} for d in devices],
         "model_runtime_distribution": {
-            "models": _tally([e["model_version"] or "?" for e in telem_all]),
-            "runtimes": _tally([e["runtime_version"] or "?" for e in telem_all])},
+            "models": tally_sql("model_version") or {"?": total_n},
+            "runtimes": tally_sql("runtime_version") or {"?": total_n}},
         "reviews": {"open": reviews_open, "total": reviews_total},
     }
 
@@ -213,49 +225,17 @@ def _repeat_usage(tid: str) -> float:
     return 100 * multi / max(len(devs), 1)
 
 
-def _tally(items):
-    out = {}
-    for i in items:
-        k = str(i)[:60]
-        out[k] = out.get(k, 0) + 1
-    return dict(sorted(out.items(), key=lambda kv: -kv[1])[:8])
-
-
-def _series(events):
-    days = {}
-    for e in events:
-        day = (e["ts"] or "")[:10]
-        b = days.setdefault(day, {"day": day, "local": 0, "cloud_simulator": 0, "queued_offline": 0,
-                                  "errors": 0, "lat_sum": 0, "lat_n": 0})
-        if e["execution_path"] in ("local", "cloud_simulator", "queued_offline"):
-            b[e["execution_path"]] += 1
-        if not e["success"]:
-            b["errors"] += 1
-        if e["success"] and e["latency_ms"]:
-            b["lat_sum"] += e["latency_ms"]
-            b["lat_n"] += 1
-    out = sorted(days.values(), key=lambda x: x["day"])
-    for o in out:
-        o["avg_latency"] = int(o["lat_sum"] / o["lat_n"]) if o["lat_n"] else 0
-        del o["lat_sum"], o["lat_n"]
+def _series_sql(tid: str):
+    days = rows("""SELECT substr(ts,1,10) day,
+                  SUM(execution_path='local') local,
+                  SUM(execution_path='cloud_simulator') cloud_simulator,
+                  SUM(execution_path='queued_offline') queued_offline,
+                  SUM(success=0) errors,
+                  AVG(CASE WHEN success=1 AND latency_ms>0 THEN latency_ms END) avg_latency
+                  FROM telemetry_events WHERE tenant_id=? GROUP BY day ORDER BY day""", (tid,))
+    out = []
+    for r in days:
+        o = dict(r)
+        o["avg_latency"] = int(o["avg_latency"] or 0)
+        out.append(o)
     return out[-14:]
-
-
-@router.get("/analytics/cost-config")
-def get_cost_config():
-    return rows("SELECT * FROM cost_config")
-
-
-@router.post("/analytics/cost-config")
-def set_cost_config(body: dict, ctxinfo: dict = Depends(ctx)):
-    require(ctxinfo, "admin")
-    allowed = {"hardware_cost_per_device_inr", "amortize_months", "local_ops_cost_device_month_inr",
-               "cloud_cost_per_request_inr", "human_support_cost_per_ticket_inr",
-               "model_update_cost_per_device_inr", "monthly_request_volume"}
-    with tx():
-        from ..db import db
-        for k, v in body.items():
-            if k in allowed:
-                db().execute("UPDATE cost_config SET value=? WHERE key=?", (float(v), k))
-    audit("analytics.cost_config_update", ctxinfo=ctxinfo, result_summary=str(body)[:120])
-    return get_cost_config()

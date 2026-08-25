@@ -1,6 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
 
 const LS_KEY = "sel-ui-state";
+const LS_TOKEN = "sel-api-token";
+
+// Share links like https://app/?token=xyz store the demo token once.
+if (typeof window !== "undefined" && window.location.search.includes("token=")) {
+  const t = new URLSearchParams(window.location.search).get("token");
+  if (t) localStorage.setItem(LS_TOKEN, t);
+}
+export function apiToken(): string {
+  return localStorage.getItem(LS_TOKEN) ?? "";
+}
 
 export const globalState = {
   role: localStorage.getItem(LS_KEY)
@@ -41,6 +51,7 @@ async function request(path: string, method = "GET", body?: unknown) {
       "Content-Type": "application/json",
       "X-Demo-Role": globalState.role,
       "X-Tenant-ID": globalState.tenant,
+      ...(apiToken() ? { "X-Demo-Token": apiToken() } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });

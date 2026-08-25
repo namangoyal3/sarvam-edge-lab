@@ -1,15 +1,16 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import seed, settings
 from .common import network_online, content_logging
 from .db import set_setting, get_setting
 from .routers import system, inference, devices, catalog, evals as evals_r, obs, reviews
+from .token_gate import TokenGateMiddleware
 
 
 @asynccontextmanager
@@ -32,10 +33,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS + ["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TokenGateMiddleware)
 
 for r in (system.router, inference.router, devices.router, catalog.router,
           evals_r.router, obs.router, reviews.router):
@@ -50,8 +52,17 @@ if not STATIC_DIR.exists():
 else:
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
+    API_PREFIXES = ("/inference", "/devices", "/models", "/policies", "/evals",
+                    "/telemetry", "/analytics", "/audit", "/reviews", "/system",
+                    "/docs", "/openapi.json", "/redoc")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
+        # T9: unknown API-shaped paths get JSON 404, everything else gets the SPA
+        probe = "/" + full_path
+        if any(probe.startswith(p.rstrip("/") + "/" if p != "/" else p) or
+               probe == (p.rstrip("/") or probe) for p in API_PREFIXES):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         candidate = STATIC_DIR / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)

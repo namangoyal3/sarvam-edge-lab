@@ -40,6 +40,7 @@ def act(review_id: str, body: ReviewAction, ctxinfo: dict = Depends(ctx)):
 
     original = jload(rv["original_result"]) or {}
     new_status, resolved_result, approval = None, None, None
+    req_status = {"approve": "completed", "reject": "rejected"}.get(body.action)
     if body.action == "approve":
         new_status, resolved_result, approval = "resolved", original, "approved"
     elif body.action == "reject":
@@ -54,22 +55,24 @@ def act(review_id: str, body: ReviewAction, ctxinfo: dict = Depends(ctx)):
         corrected["explanation"] = (original.get("explanation", "") +
                                     " | [edited by human reviewer]")
         new_status, resolved_result, approval = "resolved", corrected, "edited_approved"
-        with tx():
-            from ..db import db
+        with tx() as c:
             req = row("SELECT id FROM inference_requests WHERE id=?", (rv["request_id"],))
             if req:
-                maxv = row("SELECT MAX(version) m FROM inference_results WHERE request_id=?",
-                           (rv["request_id"],))["m"] or 1
-                db().execute("""INSERT INTO inference_results(id,request_id,version,category,urgency,language,
+                old = row("""SELECT id, version FROM inference_results WHERE request_id=?
+                          ORDER BY version DESC LIMIT 1""", (rv["request_id"],))
+                new_id = rid("res")
+                ver = (old["version"] + 1) if old else 1
+                if old:   # T7: link superseded version -> reviewer-corrected one
+                    c.execute("UPDATE inference_results SET superseded_by=? WHERE id=?",
+                              (new_id, old["id"]))
+                c.execute("""INSERT INTO inference_results(id,request_id,version,category,urgency,language,
                             suggested_next_action,confidence,explanation,model_version,runtime_version,created_at)
-                            SELECT ?,?,MAX(version)+1,category,urgency,language,suggested_next_action,
-                            ?,?,?,model_version,runtime_version,? FROM inference_results
-                            WHERE request_id=?""",
-                           (rid("res"), rv["request_id"], corrected["confidence"],
-                            corrected["explanation"], utcnow(), rv["request_id"]))
-                db().execute("""UPDATE inference_results SET superseded_by=? WHERE request_id=? AND version=(SELECT MAX(version)-0 FROM inference_results) """,
-                           ("superseded_by_review_edit", rv["request_id"])) if False else None
-                db().execute("UPDATE inference_requests SET status='completed' WHERE id=?", (rv["request_id"],))
+                            SELECT ?,?,?,category,urgency,language,suggested_next_action,
+                            ?,?,model_version,runtime_version,? FROM inference_results
+                            WHERE id=?""",
+                           (new_id, rv["request_id"], ver, corrected["confidence"],
+                            corrected["explanation"], utcnow(), old["id"] if old else ""))
+                c.execute("UPDATE inference_requests SET status='completed' WHERE id=?", (rv["request_id"],))
     elif body.action == "resolve":
         new_status, resolved_result, approval = "resolved", original, "resolved_no_change"
 
@@ -77,6 +80,10 @@ def act(review_id: str, body: ReviewAction, ctxinfo: dict = Depends(ctx)):
         c.execute("""UPDATE review_tasks SET status=?, reviewer_id=?, resolution_note=?, resolved_result=?,
                     resolved_at=? WHERE id=?""",
                    (new_status, ctxinfo["user_id"], body.reason, jdump(resolved_result), utcnow(), review_id))
+        # T2: keep the source request's status consistent with the human decision
+        if req_status and rv.get("request_id"):
+            c.execute("UPDATE inference_requests SET status=? WHERE id=?",
+                      (req_status, rv["request_id"]))
 
     audit("review." + body.action, ctxinfo=ctxinfo, correlation_id=rv["correlation_id"],
           approval_status=approval, reason=body.reason,

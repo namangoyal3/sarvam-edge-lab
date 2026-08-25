@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { post, useApi } from "../api";
+import { post, useApi, apiToken } from "../api";
 import { Card, Pill, statusColor, Table, Row, Cell, Btn, Banner } from "../ui";
 
 export default function OfflineMode() {
@@ -81,7 +81,7 @@ export default function OfflineMode() {
                   <span className="font-mono">{d.id}</span> — {d.name}: has never reached a central
                   endpoint. Real-time central analytics are unavailable for it.
                 </div>
-                <a href={`/api/devices/${d.id}/diagnostics`} target="_blank" rel="noreferrer">
+                <a href={`/api/devices/${d.id}/diagnostics${apiToken() ? `?token=${apiToken()}` : ""}`} target="_blank" rel="noreferrer">
                   <Btn small kind="ghost">download local diagnostic export</Btn>
                 </a>
               </div>

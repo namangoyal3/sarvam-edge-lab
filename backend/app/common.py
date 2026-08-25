@@ -89,11 +89,13 @@ def telemetry(*, tenant_id, event_id=None, device_id=None, correlation_id=None, 
     preview = (text[:120] if text else None) if content_logging() else None  # noqa: F841
     online = network_online()
     with tx():
+        # T5: deterministic event ids make re-runs (queue-drain retries) idempotent
         db().execute("""INSERT INTO telemetry_events(event_id,ts,tenant_id,device_id,correlation_id,
                       model_version,runtime_version,policy_version,execution_path,latency_ms,success,
                       error_code,fallback_reason,confidence,input_bytes,output_bytes,queue_state,synced,
                       content_preview,is_generated)
-                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ON CONFLICT(event_id) DO NOTHING""",
                      (eid, seed.utcnow(), tenant_id, device_id, correlation_id, model_version,
                       runtime_version, policy_version, execution_path, latency_ms,
                       1 if success else 0, error_code, fallback_reason, confidence,
@@ -113,8 +115,16 @@ def enqueue(payload_type: str, payload: dict, key: str | None = None):
         oldest = db().execute(
             "SELECT id FROM offline_queue WHERE state='pending' ORDER BY id LIMIT 1").fetchone()
         if oldest:
+            row_ = db().execute("SELECT idempotency_key, payload_type FROM offline_queue WHERE id=?",
+                                (oldest["id"],)).fetchone()
             db().execute("DELETE FROM offline_queue WHERE id=?", (oldest["id"],))
             dropped += 1
+            # T4: silent loss is the one thing observability must never do
+            db().execute("""INSERT INTO audit_events(id,ts,actor_user,role,action,reason,result_summary)
+                          VALUES(?,?,?,?,?,?,?)""",
+                         (seed.rid("aud"), seed.utcnow(), "system", "system", "offline_queue.dropped",
+                          f"bounded queue full ({QUEUE_LIMIT})",
+                          f"dropped {row_['payload_type']} key={row_['idempotency_key']}"))
     db().execute("""INSERT INTO offline_queue(idempotency_key,payload_type,payload,state,next_attempt_at,created_at)
                   VALUES(?,?,?, 'pending', ?, ?)
                   ON CONFLICT(idempotency_key) DO NOTHING""",

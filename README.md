@@ -91,6 +91,7 @@ generated history so dashboards are alive immediately.
 | `POLICY_FRESHNESS_MINUTES` | `60` | Offline policy age after which high-risk actions lock. |
 | `SARVAM_PORT` / `SARVAM_HOST` | `8001` / `127.0.0.1` | Backend bind. |
 | `CORS_ORIGINS` | localhost dev origins | Comma-separated allowed origins. |
+| `DEMO_API_TOKEN` | *(empty)* | **Set this on public deployments.** Requires `X-Demo-Token` header (or `?token=`) on every route except `/health` and `/docs`. Share the demo as `<url>/?token=<value>`. Empty = open (local dev). |
 
 Optional extra for real local mode:
 `backend/.venv/bin/pip install llama-cpp-python` (or `transformers`).
@@ -205,6 +206,7 @@ cost per successful workflow**, not cost per inference.
 ## Security and privacy posture (demo-grade)
 
 - No hardcoded secrets; env-based config only.
+- Public deployments: set `DEMO_API_TOKEN` (the Railway instance runs behind it).
 - Tenant-scoped queries; header-based demo RBAC with server-side checks.
 - Input-size limits enforced by policy before inference.
 - Typed structured-output validation with safe failure states.

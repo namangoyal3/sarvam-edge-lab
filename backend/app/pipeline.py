@@ -189,10 +189,12 @@ def run_pipeline(inp: InferInput, ctxinfo: dict, *, request_id: str | None = Non
     result_id = persist(status, "cloud_simulator" if decision.outcome == "run_cloud" else "local",
                         res.result, val_status, res.latency_ms, res.cost_inr, res.fallback_reason,
                         res.model_version, res.runtime_version)
+    path_label = "cloud_simulator" if decision.outcome == "run_cloud" else "local"
     telem = telemetry(tenant_id=tenant, device_id=inp.device_id, correlation_id=corr,
                       model_version=res.model_version, runtime_version=res.runtime_version,
                       policy_version=policy["version"],
-                      execution_path="cloud_simulator" if decision.outcome == "run_cloud" else "local",
+                      execution_path=path_label,
+                      event_id=f"evt_{corr[:18]}_{path_label}",   # T5: idempotent on drain retries
                       latency_ms=res.latency_ms, success=val_status == "valid",
                       error_code=None if val_status == "valid" else "E_SCHEMA_INVALID",
                       fallback_reason=res.fallback_reason, confidence=res.result.get("confidence"),
@@ -203,7 +205,7 @@ def run_pipeline(inp: InferInput, ctxinfo: dict, *, request_id: str | None = Non
                 model_version=res.model_version, approval_status=("pending" if hitl else "auto"),
                 correlation_id=corr, reason=hitl_why or None,
                 result_summary=f"{res.result['category']}/{res.result['urgency']} conf={res.result['confidence']}")
-    if hitl:
+    if hitl and not row("SELECT 1 FROM review_tasks WHERE correlation_id=?", (corr,)):   # T5 dedupe
         with tx():
             db().execute("""INSERT INTO review_tasks(id,request_id,correlation_id,tenant_id,reason_code,
                           detail,original_result,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",

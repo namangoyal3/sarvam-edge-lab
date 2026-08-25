@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { get, post, useApi } from "../api";
+import { get, post, useApi, apiToken } from "../api";
 import { Card, Pill, statusColor, Table, Row, Cell, Btn, Banner, Field, inputCls } from "../ui";
 
 export default function Fleet() {
@@ -128,7 +128,7 @@ export default function Fleet() {
                   <Btn small kind="ghost" onClick={() => setSel({ id: d.id, action: "Assign policy" })}>policy…</Btn>
                   <Btn small kind="ghost" onClick={() => setSel({ id: d.id, action: "Assign model" })}>model…</Btn>
                   <Btn small kind="danger" onClick={() => act(d.id, "disable", "disabled")}>disable</Btn>
-                  <a href={`/api/devices/${d.id}/diagnostics`} target="_blank" rel="noreferrer">
+                  <a href={`/api/devices/${d.id}/diagnostics${apiToken() ? `?token=${apiToken()}` : ""}`} target="_blank" rel="noreferrer">
                     <Btn small kind="ghost">diag export</Btn>
                   </a>
                 </div>

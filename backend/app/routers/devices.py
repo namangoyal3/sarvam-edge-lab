@@ -85,8 +85,9 @@ def reconnect(device_id: str, ctxinfo: dict = Depends(ctx)):
     with tx() as c:
         c.execute("UPDATE devices SET status='online', never_connected=0, last_heartbeat=?, update_status='up_to_date' WHERE id=?",
                    (utcnow(), device_id))
-        # policy resync marker
-        db().execute("UPDATE policies SET last_synced_at=? ", (utcnow(),))
+        # T3: policy resync scoped to THIS device's tenant, not all tenants
+        c.execute("""UPDATE policies SET last_synced_at=? WHERE tenant_id=
+                  (SELECT tenant_id FROM devices WHERE id=?)""", (utcnow(), device_id))
         # idempotent telemetry sync + drain queued inference jobs
         synced = 0
         for q in rows("SELECT * FROM offline_queue WHERE state IN ('pending','failed') AND payload_type='telemetry_sync'"):
