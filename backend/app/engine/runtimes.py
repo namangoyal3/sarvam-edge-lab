@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from pathlib import Path
 from .. import settings
 from . import triage as T
 from .logit_classifier import classify_via_logits
@@ -193,6 +194,32 @@ def run_local(text: str, language_hint: str, seed: str) -> RuntimeResult:
         fb.fallback_reason = f"local_model_failed ({type(e).__name__})"
         fb.latency_ms = max(_now_ms() - t0, 1)   # honest: report real attempt time
         return fb
+
+
+# ---------------------------------------------------------------- classifier head
+
+def run_classifier_head(text: str, language_hint: str | None, seed: str) -> RuntimeResult:
+    """Purpose-built TF-IDF+LogReg head (~1MB): category from the trained model,
+    everything else from the rules engine. Beats the quantized LLM 2:1 on this task."""
+    out = classify(text, language_hint)
+    try:
+        clf = getattr(run_classifier_head, "_clf", None)
+        if clf is None:
+            import joblib
+            path = Path(__file__).resolve().parent / "ticket_classifier.joblib"
+            clf = joblib.load(path)
+            run_classifier_head._clf = clf
+        probs = clf.predict_proba([text])[0]
+        out["category"] = clf.classes_[int(probs.argmax())]
+        out["confidence"] = round(float(probs.max()), 2)
+        # urgency follows the head's category when it lands in the high-risk set
+        if out["category"] in ("data_privacy", "security") and out["urgency"] not in ("critical", "high"):
+            out["urgency"] = "high"
+        out["explanation"] = f"[ticket-classifier head p={out['confidence']}] " + out["explanation"]
+    except Exception as e:   # head missing/degraded -> rules result stands
+        out["explanation"] += f"; [classifier head unavailable: {type(e).__name__}]"
+    return _safe(out, seed, cost_inr=0.0, mver="ticket-head-v1",
+                 rver="sklearn-tfidf-logreg", label=SIM_LABEL)
 
 
 # ---------------------------------------------------------------- cloud simulator

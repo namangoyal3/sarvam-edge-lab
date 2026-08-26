@@ -21,8 +21,9 @@ def _cost(key: str, default: float) -> float:
 def _local_available(model_id: str, device: dict | None) -> tuple[bool, str]:
     """The embedded rules engine always runs on-device. A user-provided artifact
     counts as available only when its file + runtime exist AND the device can run it."""
-    if model_id == DEFAULT_MODEL:
-        return True, "embedded rules engine"
+    mrow = row("SELECT kind FROM models WHERE id=?", (model_id,))
+    if mrow and mrow["kind"] in ("fixture", "classifier"):
+        return True, "on-device lightweight runtime"
     st = settings.active_mode()
     if st["mode"] != "real_local":
         return False, st.get("reason", "user-provided Sarvam-1 artifact unavailable")
@@ -167,6 +168,9 @@ def run_pipeline(inp: InferInput, ctxinfo: dict, *, request_id: str | None = Non
     if decision.outcome == "run_cloud":
         res = run_cloud_sim(inp.text, inp.language_hint if inp.language_hint != "auto" else None,
                             seed_text, _cost("cloud_cost_per_request_inr", 0.85))
+    elif model_id == "m-ticket-head":
+        from .engine.runtimes import run_classifier_head
+        res = run_classifier_head(inp.text, inp.language_hint if inp.language_hint != "auto" else None, seed_text)
     elif model_id == DEFAULT_MODEL:
         res = run_fixture(inp.text, inp.language_hint if inp.language_hint != "auto" else None, seed_text)
     else:

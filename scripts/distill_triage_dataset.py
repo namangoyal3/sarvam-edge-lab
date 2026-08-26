@@ -114,7 +114,7 @@ def make_examples():
     for cat, langs in T.items():
         for lang_key, templates in langs.items():
             for tpl in templates:
-                for _ in range(30):
+                for _ in range(80):
                     text = tpl.format(amt=rng.choice(AMTS), date=rng.choice(DATES))
                     if "{amt}" in text or "{date}" in text:
                         text = tpl.format(amt=rng.choice(AMTS), date=rng.choice(DATES))
@@ -137,7 +137,7 @@ def make_examples():
                     }
                     out.append({"text": text, "label": json.dumps(payload, ensure_ascii=False)})
     # ambiguous / other-heavy tail so model learns humility
-    for _ in range(140):
+    for _ in range(200):
         text = rng.choice(["thing not working thing issue problem",
                            "hello hello hello?", "aaaaaaaa help",
                            "kuch samajh nahi aa raha kya problem hai",
