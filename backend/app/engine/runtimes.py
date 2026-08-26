@@ -120,7 +120,7 @@ def _try_llama_cpp(text: str, language_hint: str) -> dict | None:
     llm = _get_llama()
     prompt = LOCAL_PROMPT.replace("{text}", text[:600]) + LOCAL_PROMPT_END
     # grammar-constrained greedy decode -> always parseable, enum-safe JSON
-    out = llm(prompt, max_tokens=300, temperature=0.0, grammar=_get_grammar())
+    out = llm(prompt, max_tokens=300, temperature=0.0, repeat_penalty=1.15, grammar=_get_grammar())
     raw = out["choices"][0]["text"]
     return _parse_jsonish(raw)
 
