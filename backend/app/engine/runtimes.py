@@ -113,13 +113,31 @@ def _get_llama():
     return llm
 
 
+# After a correct SFT the 8-shot block is dead weight: ~780 tokens of prefill on
+# every request, and its first example (billing) biases a heavily-quantised model
+# toward billing. Artifacts trained on the prompt/completion dataset should be
+# served with SARVAM_SFT_PROMPT=1 so training and inference match.
+SFT_PROMPT = (
+    "You are a support-ticket triage engine. Classify the ticket and reply with "
+    "ONLY a compact JSON object with keys category (billing|connectivity|"
+    "account_access|performance|data_privacy|security|feature_request|other), "
+    "urgency (low|medium|high|critical), language (en|hi|mixed-hi-en), "
+    "suggested_next_action, confidence, explanation.\n\nTicket: {text}\nJSON:")
+
+
+def _prompt_for(text: str) -> str:
+    if os.environ.get("SARVAM_SFT_PROMPT") == "1":
+        return SFT_PROMPT.replace("{text}", text[:600])
+    return LOCAL_PROMPT.replace("{text}", text[:600]) + LOCAL_PROMPT_END
+
+
 def _try_llama_cpp(text: str, language_hint: str) -> dict | None:
     try:
         from llama_cpp import Llama
     except ImportError:
         return None
     llm = _get_llama()
-    prompt = LOCAL_PROMPT.replace("{text}", text[:600]) + LOCAL_PROMPT_END
+    prompt = _prompt_for(text)
     # grammar-constrained greedy decode -> always parseable, enum-safe JSON
     out = llm(prompt, max_tokens=300, temperature=0.0, repeat_penalty=1.15, grammar=_get_grammar())
     raw = out["choices"][0]["text"]
@@ -135,8 +153,7 @@ def _try_transformers(text: str, language_hint: str) -> dict | None:
     if gen is None:
         gen = pipeline("text-generation", model=settings.MODEL_PATH, trust_remote_code=False)
         _try_transformers._pipe = gen
-    out = gen(LOCAL_PROMPT.replace("{text}", text[:600]) + LOCAL_PROMPT_END,
-              max_new_tokens=220, do_sample=False)
+    out = gen(_prompt_for(text), max_new_tokens=220, do_sample=False)
     return _parse_jsonish(out[0]["generated_text"][-600:])
 
 
@@ -218,8 +235,16 @@ def run_classifier_head(text: str, language_hint: str | None, seed: str) -> Runt
         out["explanation"] = f"[ticket-classifier head p={out['confidence']}] " + out["explanation"]
     except Exception as e:   # head missing/degraded -> rules result stands
         out["explanation"] += f"; [classifier head unavailable: {type(e).__name__}]"
+        # Degraded to rules -> label it as the simulation it now is.
+        return _safe(out, seed, cost_inr=0.0, mver="ticket-head-v1+rules-fallback",
+                     rver="sklearn-tfidf-logreg", label=SIM_LABEL)
+    # The head is trained weights doing real inference on this machine. It
+    # carried SIM_LABEL from the day it was added, so every response it served
+    # said "Simulated demo output" -- and _safe derives `simulated` from the
+    # label, so the JSON flag lied too. "Real local" is the phrase _safe keys
+    # on; keep them in sync.
     return _safe(out, seed, cost_inr=0.0, mver="ticket-head-v1",
-                 rver="sklearn-tfidf-logreg", label=SIM_LABEL)
+                 rver="sklearn-tfidf-logreg", label="Real local classifier head")
 
 
 # ---------------------------------------------------------------- cloud simulator
