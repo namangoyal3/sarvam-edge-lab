@@ -2,4 +2,9 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
 httpx>=0.27
+# app/engine/logit_classifier.py imports numpy at module scope, so the API
+# cannot start without it -- even in simulation mode, where no model runs.
+# It was missing here, and the first deploy carrying that file crashed on
+# ModuleNotFoundError while the previous (older) image was already gone.
+numpy>=1.26
 pytest>=8.0

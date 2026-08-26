@@ -202,6 +202,36 @@ def test_token_gate_blocks_when_env_set(monkeypatch):
     assert r.status_code == 200
 
 
+def test_token_gate_lets_the_spa_shell_load(monkeypatch):
+    """The share link renders, then the bundle presents the token.
+
+    `?token=` reaches the HTML document only -- a <script src="/assets/..."> tag
+    carries no query string. Gating the bundle 401s it, the module that reads
+    the token never runs, and the share link is a blank page. The shell is
+    public code; the DATA behind it is what the token protects.
+    """
+    monkeypatch.setenv("DEMO_API_TOKEN", "s3cret")
+    assert client.get("/").status_code == 200                    # index.html
+    assert client.get("/assets/index-abc.js").status_code != 401  # 404 is fine, 401 is not
+    assert client.get("/devices").status_code == 401              # data still gated
+    assert client.get("/api/health").status_code == 200           # both spellings open
+
+
+def test_api_prefix_serves_json_not_the_spa():
+    """The built UI calls /api/*; only Vite's dev proxy ever stripped that.
+
+    In production /api/models fell through to the SPA fallback and returned
+    index.html with a 200. The UI parsed HTML as JSON, failed, and showed
+    "Backend API unreachable at /api" over a healthy backend. Every route is
+    mounted at both spellings now.
+    """
+    root = client.get("/models", headers=H_ADMIN)
+    prefixed = client.get("/api/models", headers=H_ADMIN)
+    assert prefixed.status_code == 200
+    assert prefixed.headers["content-type"].startswith("application/json")
+    assert prefixed.json() == root.json()
+
+
 def test_approve_updates_request_status():
     r = client.post("/inference", json={"text": "[low] billing urgent issue"}, headers=H_ADMIN).json()
     assert r["status"] == "needs_review"

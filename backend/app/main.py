@@ -42,6 +42,12 @@ app.add_middleware(TokenGateMiddleware)
 for r in (system.router, inference.router, devices.router, catalog.router,
           evals_r.router, obs.router, reviews.router):
     app.include_router(r)
+    # The built SPA calls /api/*. In dev, Vite's proxy rewrites that prefix away
+    # (frontend/vite.config.ts), so the routes above are enough. In production
+    # nothing rewrites it: /api/models fell through to spa_fallback, came back as
+    # index.html with a 200, and the UI reported "Backend API unreachable at
+    # /api" over an app that was running perfectly. Mount both spellings.
+    app.include_router(r, prefix="/api", include_in_schema=False)
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
