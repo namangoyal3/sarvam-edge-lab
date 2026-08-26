@@ -362,3 +362,30 @@ def test_classifier_head_is_real_and_reported_as_real():
     out = res[0] if isinstance(res, tuple) else res
     body = out if isinstance(out, dict) else out.__dict__
     assert "classifier head unavailable" not in str(body)
+
+
+def test_model_catalog_follows_the_build_not_the_database():
+    """A model added to MODELS reaches a database that was seeded long ago.
+
+    run_seed() returned early whenever tenants existed, so the catalog was
+    written on first boot and never again. Railway's database is a mounted
+    volume seeded weeks before m-ticket-head was added, so the one real trained
+    model in the image was missing from the registry entirely -- and asking for
+    it by id returned no row, which then crashed compat.check on None.
+    """
+    from app import seed
+    from app.db import db, row
+
+    db().execute("DELETE FROM models WHERE id='m-ticket-head'")
+    db().commit()
+    assert row("SELECT * FROM models WHERE id=?", ("m-ticket-head",)) is None
+
+    seed.run_seed()                      # tenants exist -> the early-return path
+    assert row("SELECT * FROM models WHERE id=?", ("m-ticket-head",)) is not None
+
+
+def test_unknown_model_id_is_unavailable_not_a_500():
+    from app.pipeline import _local_available
+
+    ok, why = _local_available("m-does-not-exist", {"ram_gb": 8, "os": "linux"})
+    assert ok is False and "registry" in why

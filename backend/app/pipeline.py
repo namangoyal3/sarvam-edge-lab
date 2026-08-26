@@ -30,6 +30,12 @@ def _local_available(model_id: str, device: dict | None) -> tuple[bool, str]:
     if device:
         from .engine import compat as C
         model = row("SELECT * FROM models WHERE id=?", (model_id,))
+        if model is None:
+            # An id with no registry row reached compat.check as None and died
+            # on model.get(), returning a 500 for what is a plain "unknown
+            # model". It only surfaced once active_mode() started returning
+            # real_local, which is exactly when this branch first ran.
+            return False, f"model {model_id!r} is not in the registry"
         verdict = C.check(device, model)
         if verdict["status"] == "incompatible":
             return False, "device cannot run this model: " + "; ".join(verdict["reasons"])

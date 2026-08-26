@@ -143,6 +143,27 @@ MODELS = [
          supported_runtimes=["llama-cpp-python"], min_ram_gb=4, recommended_ram_gb=6, expected_latency_ms=450,
          version="user-artifact", release_status="external_artifact_required",
          checksum=None, signature="unsigned-user-provided", kind="local"),
+    dict(id="m-sarvam-mini-iq2m", name="Sarvam-1 triage FT IQ2_M (<1GB)",
+         task="text-generation (triage via grammar-constrained JSON)",
+         param_count="~2.5B", artifact_size_mb=863, precision="int2", quantization="IQ2_M",
+         runtime="llama.cpp family", supported_os=["macos", "linux", "windows", "android"],
+         supported_chipsets=[], supported_runtimes=["llama-cpp-python"],
+         min_ram_gb=2, recommended_ram_gb=4, expected_latency_ms=1400, version="ft-iq2m",
+         release_status="registered_demo", checksum=None, signature="unsigned-user-provided", kind="local"),
+    dict(id="m-sarvam-mini-iq3xxs", name="Sarvam-1 triage FT IQ3_XXS (<1GB)",
+         task="text-generation (triage via grammar-constrained JSON)",
+         param_count="~2.5B", artifact_size_mb=966, precision="int3", quantization="IQ3_XXS",
+         runtime="llama.cpp family", supported_os=["macos", "linux", "windows", "android"],
+         supported_chipsets=[], supported_runtimes=["llama-cpp-python"],
+         min_ram_gb=2, recommended_ram_gb=4, expected_latency_ms=1000, version="ft-iq3xxs",
+         release_status="registered_demo", checksum="5809f2d4b72f48ea",
+         signature="unsigned-user-provided", kind="local"),
+    dict(id="m-ticket-head", name="Ticket Classifier Head (~1MB)", task="support-ticket-triage",
+         param_count="~40k weights", artifact_size_mb=1, precision="float32", quantization="none",
+         runtime="sklearn-tfidf-logreg", supported_os=["any"], supported_chipsets=["any"],
+         supported_runtimes=["any"], min_ram_gb=0.5, recommended_ram_gb=1,
+         expected_latency_ms=54, version="1.0.0", release_status="demo_classifier",
+         checksum=None, signature="self-demo-signed", kind="classifier"),
     dict(id="m-cloud-large-ref", name="Sarvam Large (cloud simulator reference)", task="support-ticket-triage",
          param_count="undisclosed", artifact_size_mb=None, precision="bf16", quantization="server-side",
          runtime="cloud", supported_os=["any"], supported_chipsets=[], supported_runtimes=["cloud"],
@@ -155,7 +176,8 @@ POLICIES = [
          max_input_bytes=4000, allowed_data_classes=["support_text"], allowed_models=[],
          allowed_device_ids=[], min_confidence=0.55, hitl_risk_threshold="high"),
     dict(id="p-local-only", name="Local-only (regulated)", mode="local_only", offline_queue_enabled=1,
-         max_input_bytes=2000, allowed_data_classes=["support_text"], allowed_models=["m-triage-rules-sim", "m-sarvam-1-gguf-q4"],
+         max_input_bytes=2000, allowed_data_classes=["support_text"], allowed_models=["m-triage-rules-sim", "m-ticket-head", "m-sarvam-1-gguf-q4",
+                         "m-sarvam-mini-iq2m", "m-sarvam-mini-iq3xxs"],
          allowed_device_ids=[], min_confidence=0.50, hitl_risk_threshold="medium"),
     dict(id="p-cloud-ok", name="Cloud-allowed (non-sensitive tenant)", mode="cloud_allowed", offline_queue_enabled=0,
          max_input_bytes=8000, allowed_data_classes=["support_text", "public_feedback"], allowed_models=[],
@@ -163,8 +185,33 @@ POLICIES = [
 ]
 
 
+def sync_models(c, now: str):
+    """Write the model catalog, overwriting rows that already exist.
+
+    MODELS is reference data, not user data: it is the list of things this
+    build knows how to run. It used to be written only inside the first-boot
+    branch, so a long-lived database never learned about a model added later.
+    On Railway that database is a mounted volume seeded weeks ago, so
+    m-ticket-head -- the one real trained model in the image -- simply was not
+    in the registry, and asking for it returned no row at all.
+    """
+    for m in MODELS:
+        c.execute("""INSERT OR REPLACE INTO models(id,name,task,param_count,artifact_size_mb,precision,quantization,
+                    runtime,supported_os,supported_chipsets,supported_runtimes,min_ram_gb,recommended_ram_gb,
+                    expected_latency_ms,version,release_status,checksum,signature,kind,registered_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (m["id"], m["name"], m["task"], m["param_count"], m["artifact_size_mb"], m["precision"],
+                   m["quantization"], m["runtime"], jdump(m["supported_os"]), jdump(m["supported_chipsets"]),
+                   jdump(m["supported_runtimes"]), m["min_ram_gb"], m.get("recommended_ram_gb"),
+                   m["expected_latency_ms"], m["version"], m["release_status"], m["checksum"],
+                   m["signature"], m["kind"], now))
+
+
 def run_seed(force: bool = False):
     if db().execute("SELECT COUNT(*) c FROM tenants").fetchone()["c"] and not force:
+        # Demo records stay put, but the catalog follows the build.
+        with tx() as c:
+            sync_models(c, utcnow())
         return
     now = utcnow()
     with tx() as c:
@@ -204,16 +251,7 @@ def run_seed(force: bool = False):
                        "m-triage-rules-sim", "1.4.0", "p-balanced", status, batt, thermal, hb,
                        "unknown", "up_to_date", nc, now))
 
-        for m in MODELS:
-            c.execute("""INSERT INTO models(id,name,task,param_count,artifact_size_mb,precision,quantization,
-                        runtime,supported_os,supported_chipsets,supported_runtimes,min_ram_gb,recommended_ram_gb,
-                        expected_latency_ms,version,release_status,checksum,signature,kind,registered_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                      (m["id"], m["name"], m["task"], m["param_count"], m["artifact_size_mb"], m["precision"],
-                       m["quantization"], m["runtime"], jdump(m["supported_os"]), jdump(m["supported_chipsets"]),
-                       jdump(m["supported_runtimes"]), m["min_ram_gb"], m.get("recommended_ram_gb"),
-                       m["expected_latency_ms"], m["version"], m["release_status"], m["checksum"],
-                       m["signature"], m["kind"], now))
+        sync_models(c, now)
 
         for p in POLICIES:
             c.execute("""INSERT INTO policies(id,tenant_id,name,mode,offline_queue_enabled,max_input_bytes,
@@ -238,7 +276,8 @@ def run_seed(force: bool = False):
         for k, label, v, unit in cost:
             c.execute("INSERT INTO cost_config VALUES(?,?,?,?)", (k, label, v, unit))
 
-        _seed_history(c)
+        if settings.SEED_HISTORY:
+            _seed_history(c)
         db().commit()
 
 
