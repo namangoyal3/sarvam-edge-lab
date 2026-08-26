@@ -17,6 +17,7 @@ def health():
         "mode": mode["mode"],
         "mode_reason": mode.get("reason", "real local model loaded"),
         "model_path": settings.MODEL_PATH or "(none)",
+        "model_id": settings.MODEL_ID or None,
         "runtime_preference": settings.RUNTIME_PREF,
         "network_online": network_online(),
         "policy_stale": is_policy_stale(),

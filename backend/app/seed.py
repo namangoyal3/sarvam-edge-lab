@@ -158,6 +158,14 @@ MODELS = [
          min_ram_gb=2, recommended_ram_gb=4, expected_latency_ms=1000, version="ft-iq3xxs",
          release_status="registered_demo", checksum="5809f2d4b72f48ea",
          signature="unsigned-user-provided", kind="local"),
+    dict(id="m-sarvam-mini-v3-iq3xxs", name="Sarvam-1 triage FT v3 IQ3_XXS (<1GB, fixed SFT)",
+         task="text-generation (triage via grammar-constrained JSON)",
+         param_count="~2.5B", artifact_size_mb=966, precision="int3", quantization="IQ3_XXS",
+         runtime="llama.cpp family", supported_os=["macos", "linux", "windows", "android"],
+         supported_chipsets=[], supported_runtimes=["llama-cpp-python"],
+         min_ram_gb=2, recommended_ram_gb=4, expected_latency_ms=700, version="ft-v3-iq3xxs",
+         release_status="registered_demo", checksum=None,
+         signature="unsigned-user-provided", kind="local"),
     dict(id="m-ticket-head", name="Ticket Classifier Head (~1MB)", task="support-ticket-triage",
          param_count="~40k weights", artifact_size_mb=1, precision="float32", quantization="none",
          runtime="sklearn-tfidf-logreg", supported_os=["any"], supported_chipsets=["any"],
@@ -177,7 +185,7 @@ POLICIES = [
          allowed_device_ids=[], min_confidence=0.55, hitl_risk_threshold="high"),
     dict(id="p-local-only", name="Local-only (regulated)", mode="local_only", offline_queue_enabled=1,
          max_input_bytes=2000, allowed_data_classes=["support_text"], allowed_models=["m-triage-rules-sim", "m-ticket-head", "m-sarvam-1-gguf-q4",
-                         "m-sarvam-mini-iq2m", "m-sarvam-mini-iq3xxs"],
+                         "m-sarvam-mini-iq2m", "m-sarvam-mini-iq3xxs", "m-sarvam-mini-v3-iq3xxs"],
          allowed_device_ids=[], min_confidence=0.50, hitl_risk_threshold="medium"),
     dict(id="p-cloud-ok", name="Cloud-allowed (non-sensitive tenant)", mode="cloud_allowed", offline_queue_enabled=0,
          max_input_bytes=8000, allowed_data_classes=["support_text", "public_feedback"], allowed_models=[],
@@ -212,6 +220,11 @@ def run_seed(force: bool = False):
         # Demo records stay put, but the catalog follows the build.
         with tx() as c:
             sync_models(c, utcnow())
+            if not settings.SEED_HISTORY:
+                # SEED_HISTORY=0 promises real-traffic-only dashboards; an
+                # existing DB may still carry the generated backfill. Purge it.
+                c.execute("DELETE FROM telemetry_events WHERE is_generated=1")
+                c.execute("DELETE FROM inference_requests WHERE id LIKE 'req_gen_%'")
         return
     now = utcnow()
     with tx() as c:

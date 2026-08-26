@@ -47,6 +47,30 @@ cd sarvam-edge-lab
 
 `./run.sh --reset` wipes the database first. Stop with Ctrl-C.
 
+### Run the real sub-1GB model and make every number come from it
+
+```bash
+bash scripts/local_model.sh          # add --keep-db to preserve existing records
+```
+
+This does five things:
+
+1. Loads `~/sarvam-soup/sarvam-1-triage-iq3xxs.gguf` (966 MB) through llama.cpp
+   and blocks until `/health` reports `mode=real_local`.
+2. Resets the database with the synthetic 7-day backfill **disabled**
+   (`SARVAM_SEED_HISTORY=0`), so no generated row can inflate a dashboard.
+3. Rolls the artifact to every enrolled device and prints which devices the
+   compatibility matrix rejects, with the reason.
+4. Replays 30 English / Hindi / Hinglish tickets as real on-device inference.
+5. Scores the held-out eval set on the same artifact.
+
+Every figure on Overview, Observability and Evals then comes from that model:
+p50 ≈ 1.8 s, 100 % local execution, `current model = ft-iq3xxs`, eval verdict
+FAIL at 0.36 task accuracy. Those are measurements, not targets — see
+[Model accuracy](#model-accuracy-raising-it-honestly).
+
+Override the artifact with `SARVAM_MODEL_PATH` and `SARVAM_MODEL_ID`.
+
 Manual alternative:
 
 ```bash
@@ -85,6 +109,8 @@ generated history so dashboards are alive immediately.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SARVAM_MODEL_PATH` | *(empty)* | Path to your local Sarvam-1 artifact (GGUF). Empty = simulation mode. |
+| `SARVAM_MODEL_ID` | *(empty)* | Catalog id of that artifact. The Playground selects it by default when a real model is loaded. |
+| `SARVAM_SEED_HISTORY` | `1` | `0` skips the generated 7-day backfill so dashboards show real traffic only. |
 | `SARVAM_RUNTIME` | `auto` | `auto`, `llama_cpp`, `transformers`, or `fixture`. |
 | `SARVAM_DB_PATH` | `backend/data/sarvam_edge.db` | SQLite file location. |
 | `DEMO_CONTENT_LOGGING` | `0` | Seed value for content logging. Runtime toggle exists in Observability. |
@@ -221,19 +247,31 @@ Every runtime below was measured on the same 25-case hand-written eval:
 | Runtime | Size | Task acc | Schema | p50 | Notes |
 |---|---|---|---|---|---|
 | Rules engine | ~20 KB | 1.00 | 1.0 | 51 ms | deterministic labeler; demo default |
-| **Classifier head (LinearSVC, char n-grams)** | **~1 MB** | **0.92** | **1.0** | **54 ms** | purpose-built; beats every LLM variant 2:1 |
-| Sarvam-1 FT IQ2_M | 863 MB | 0.24 | 1.0 | 1.4 s | confidence calibrated 0.90 |
-| Sarvam-1 FT IQ3_XXS (served locally) | 966 MB | 0.36 | 1.0 | 1.0 s | best sub-GB LLM |
-| Sarvam-1 FT Q4_K_M | 1.4 GB | 0.44 | 1.0 | 1.1 s | breaks the device budget |
+| **Classifier head (LinearSVC, char n-grams)** | **~1 MB** | **0.92** | **1.0** | **54 ms** | purpose-built; still beats every LLM variant |
+| Sarvam-1 FT v2 IQ2_M | 863 MB | 0.24 | 1.0 | 1.4 s | broken training (see below) |
+| Sarvam-1 FT v2 IQ3_XXS | 966 MB | 0.36 | 1.0 | 1.0 s | broken training (see below) |
+| Sarvam-1 FT v2 Q4_K_M | 1.4 GB | 0.44 | 1.0 | 1.1 s | breaks the device budget |
+| **Sarvam-1 FT v3 IQ3_XXS (served)** | **966 MB** | **0.56** | **1.0** | **1.03 s** | fixed training; short prompt; +20 pts at identical size |
+| Sarvam-1 FT v3 IQ3_XXS + q8 embeddings | 1.1 GB | 0.56 | 1.0 | 1.8 s | embedding precision didn't pay at epoch 2 |
+| Sarvam-1 FT v3 f16 (reference, never ships) | 4.7 GB | 0.80 | 1.0 | 2.1 s | isolates quantization cost |
 | Cloud simulator | — | synthetic | 1.0 | 1.3 s | not a real API |
 
 What the numbers teach:
 
 - Raw generation from the 2-bit quant produced garbage JSON, so decoding runs
   under a GBNF grammar: schema validity is 1.0 by construction, not by luck.
-- LoRA fine-tuning on distilled labels fixed format and confidence calibration;
-  it did NOT fix classification. Retraining on 2.4x more data moved accuracy
-  DOWN (36→28% at IQ3_XXS): the ceiling is quantization damage, not volume.
+- v1/v2 "fine-tuning" never trained on a single answer token. Every training
+  row embedded a 781-token few-shot preamble; the answer started at token ~812
+  while max_length was 512 — all 4,294 rows truncated BEFORE the label. The
+  model memorised the preamble (hence the billing bias) and never learned the
+  task or its stop token. More data made it worse (36→28%) because it was more
+  repetitions of a broken lesson — NOT quantization, as this README previously
+  claimed.
+- v3 fixes it: short prompt/completion rows (~213 tokens), completion-only
+  loss, EOS trained. Same 966 MB artifact: 0.36 → 0.56. The f16 reference at
+  0.80 now isolates the true quantization cost: 24 points at 3-bit.
+- Quantization hurts code-mixed text most: at 3-bit, pure Hindi holds 86%
+  while Hinglish collapses to 17% (f16: 86% / 67%).
 - A ~1 MB purpose-built head beats every quantized LLM variant 2:1 on this
   task — the argument for task-specific edges over shrunken generalists.
 - Critical-field gates (names, amounts, dates) pass everywhere because

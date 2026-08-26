@@ -3,6 +3,7 @@ import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from .. import settings
 from ..common import ctx, network_online
 from ..db import db, row, rows, tx
 from ..engine import triage as T
@@ -16,6 +17,15 @@ GATES = {
     "category": 0.85, "urgency": 0.80, "language": 0.90,
     "names_gate": 0.90, "amounts_gate": 0.90, "dates_gate": 0.75,
 }
+
+
+def _eval_model_id(mode: str) -> str:
+    """Attribute the run to whatever actually produced the answers."""
+    if mode == "cloud_sim":
+        return "m-cloud-large-ref"
+    if mode == "local":
+        return settings.MODEL_ID or settings.MODEL_PATH or "m-sarvam-1-gguf-q4"
+    return "m-triage-rules-sim"
 
 
 @router.get("/datasets")
@@ -157,10 +167,10 @@ def run_eval(mode: str = Body(default="fixture", embed=True),
         from ..db import db
         db().execute("""INSERT INTO eval_runs(id,dataset_id,dataset_version,mode,model_id,metrics,gates,
                     breakdowns,verdict,started_at,duration_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                   (run_id, dataset_id, ds["version"], mode, "m-triage-rules-sim",
+                   (run_id, dataset_id, ds["version"], mode, _eval_model_id(mode),
                     json.dumps(metrics), json.dumps(gates), json.dumps(breakdowns), verdict,
                     utcnow(), int((time.time() - t0) * 1000)))
-    return {"eval_run_id": run_id, "metrics": metrics, "gates": gates,
+    return {"eval_run_id": run_id, "verdict": verdict, "metrics": metrics, "gates": gates,
             "breakdowns": breakdowns, "per_case": per_case}
 
 

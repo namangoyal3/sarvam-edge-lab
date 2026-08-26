@@ -165,13 +165,22 @@ if __name__ == "__main__":
     data = make_examples()
     rng.shuffle(data)
     n_val = max(60, len(data) // 20)
-    # Mirror the runtime prompt byte-for-byte so training == inference distribution
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-    from app.engine.runtimes import LOCAL_PROMPT, LOCAL_PROMPT_END  # noqa: E402
 
+    # Prompt/completion rows, NOT one flat "text" blob.
+    #
+    # The previous version pasted the runtime's 8-shot prompt into every row to
+    # "mirror the inference distribution". That preamble is 781 tokens; the
+    # answer landed at token ~812 while SFTConfig.max_length was 512, so every
+    # single row was truncated before its label. The LoRA trained on zero answer
+    # tokens and just memorised the preamble -- whose first example is billing,
+    # which is exactly what the model over-predicted at inference.
+    #
+    # After SFT the few-shot block is redundant anyway: that is what the
+    # fine-tune is for. Splitting the columns also lets TRL mask the prompt so
+    # the loss lands only on the JSON.
     def to_row(ex):
-        return {"text": LOCAL_PROMPT.replace("{text}", ex["text"]) +
-                LOCAL_PROMPT_END + " " + ex["label"]}
+        return {"prompt": INSTRUCTION + ex["text"] + "\nJSON:",
+                "completion": " " + ex["label"]}
 
     out_dir = Path.home() / "sarvam-soup/data"
     with open(out_dir / "triage_train.jsonl", "w") as f:

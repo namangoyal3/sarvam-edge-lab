@@ -84,7 +84,7 @@ LOCAL_PROMPT_END = "\nJSON:"
 
 # GBNF grammar: forces schema-valid JSON out of even heavily-quantised base models
 TRIAGE_GRAMMAR = r"""
-root ::= "{" ws "\"category\"" ws ":" ws cat "," ws "\"urgency\"" ws ":" ws urg "," ws "\"language\"" ws ":" ws lang "," ws "\"suggested_next_action\"" ws ":" ws str "," ws "\"confidence\"" ws ":" ws conf "," ws "\"explanation\"" ws ":" ws str ws "}"
+root ::= ws "{" ws "\"category\"" ws ":" ws cat "," ws "\"urgency\"" ws ":" ws urg "," ws "\"language\"" ws ":" ws lang "," ws "\"suggested_next_action\"" ws ":" ws str "," ws "\"confidence\"" ws ":" ws conf "," ws "\"explanation\"" ws ":" ws str ws "}"
 cat ::= "\"billing\"" | "\"connectivity\"" | "\"account_access\"" | "\"performance\"" | "\"data_privacy\"" | "\"security\"" | "\"feature_request\"" | "\"other\""
 urg ::= "\"low\"" | "\"medium\"" | "\"high\"" | "\"critical\""
 lang ::= "\"en\"" | "\"hi\"" | "\"mixed-hi-en\""

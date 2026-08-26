@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { get, post } from "../api";
+import { get, post, postForm } from "../api";
 import {
   Card, Pill, statusColor, KV, Field, inputCls, Btn, Banner, Table, Row, Cell, fmtMs, fmtINR,
 } from "../ui";
@@ -22,17 +22,64 @@ export default function Playground() {
   const [busy, setBusy] = useState(false);
   const [showTrace, setShowTrace] = useState(true);
   const [recent, setRecent] = useState<any[]>([]);
+  const [rec, setRec] = useState<MediaRecorder | null>(null);
+  const [voiceOk, setVoiceOk] = useState<boolean | null>(null);
 
   useEffect(() => {
     get("/devices").then(setDevices).catch(() => {});
-    get("/models").then((m) => {
-      setModels(m);
-      if (!modelId) setModelId(m.find((x: any) => x.kind === "fixture")?.id ?? "");
-    }).catch(() => {});
     get("/policies").then(setPolicies).catch(() => {});
-    get("/health").then(setHealth).catch(() => {});
+    get("/inference/voice/status").then((v) => setVoiceOk(v.available)).catch(() => setVoiceOk(false));
+    // health decides the default model: a real loaded artifact wins over the fixture
+    Promise.all([
+      get("/health").catch(() => null),
+      get("/models").catch(() => [] as any[]),
+    ]).then(([h, m]: [any, any[]]) => {
+      if (h) setHealth(h);
+      setModels(m);
+      const real =
+        h?.mode === "real_local" && m.some((x: any) => x.id === h.model_id) ? h.model_id : null;
+      setModelId(real ?? m.find((x: any) => x.kind === "fixture")?.id ?? "");
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function toggleMic() {
+    if (rec) {
+      rec.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      mr.ondataavailable = (e) => chunks.push(e.data);
+      mr.onstop = async () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        setRec(null);
+        setBusy(true);
+        setErr(null);
+        try {
+          const form = new FormData();
+          form.append("audio", new Blob(chunks, { type: mr.mimeType }), "ticket.webm");
+          if (deviceId) form.append("device_id", deviceId);
+          if (policyId) form.append("policy_id", policyId);
+          if (modelId) form.append("model_id", modelId);
+          const r = await postForm("/inference/voice", form);
+          if (r.voice?.text) setText(r.voice.text);
+          setResp(r);
+          setRecent((prev) => [r, ...prev].slice(0, 6));
+        } catch (e: any) {
+          setErr(String(e.message ?? e));
+        } finally {
+          setBusy(false);
+        }
+      };
+      mr.start();
+      setRec(mr);
+    } catch (e: any) {
+      setErr("microphone unavailable: " + String(e.message ?? e));
+    }
+  }
 
   async function run() {
     setBusy(true);
@@ -60,9 +107,14 @@ export default function Playground() {
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Inference Playground</h1>
         {health && (
-          <span className="text-xs text-slate-400 font-mono">
-            artifact: {health.model_path} · runtime pref: {health.runtime_preference}
-          </span>
+          <div className="flex items-center gap-2">
+            <Pill color={health.mode === "real_local" ? "green" : "amber"}>
+              {health.mode === "real_local" ? "real local model" : health.mode}
+            </Pill>
+            <span className="text-xs text-slate-400 font-mono">
+              artifact: {health.model_path} · runtime pref: {health.runtime_preference}
+            </span>
+          </div>
         )}
       </div>
 
@@ -120,10 +172,15 @@ export default function Playground() {
                   <option value="cloud">force cloud simulator</option>
                 </select>
               </Field>
-              <div className="flex items-end">
-                <Btn onClick={run} disabled={busy}>
+              <div className="flex items-end gap-2">
+                <Btn onClick={run} disabled={busy || !!rec}>
                   {busy ? "Running…" : "Run inference"}
                 </Btn>
+                {voiceOk && (
+                  <Btn kind={rec ? "danger" : "ghost"} onClick={toggleMic} disabled={busy}>
+                    {rec ? "◼ Stop & triage" : "🎤 Speak ticket"}
+                  </Btn>
+                )}
               </div>
             </div>
             {err && <Banner tone="error">{err}</Banner>}
@@ -148,6 +205,12 @@ export default function Playground() {
               )}
               {resp.status === "queued_offline" && (
                 <Banner tone="info">Queued locally. It will execute automatically on reconnect.</Banner>
+              )}
+              {resp.voice && (
+                <div className="text-xs text-slate-300 border border-ink-700 rounded-lg p-2 bg-ink-950">
+                  <span className="text-slate-500">heard ({resp.voice.asr_model}, {resp.voice.asr_latency_ms}ms, on-device): </span>
+                  “{resp.voice.text}”
+                </div>
               )}
               {resp.result && (
                 <>

@@ -16,8 +16,8 @@ def check(device: dict, model: dict) -> dict:
     if model.get("kind") == "cloud_ref":
         return {"status": "compatible_with_warning",
                 "reasons": ["cloud reference model: execution depends on network + policy, not device hardware"]}
-    if model.get("kind") == "fixture":
-        return {"status": "compatible", "reasons": ["rules-engine fixture runs on any device"]}
+    if model.get("kind") in ("fixture", "classifier"):
+        return {"status": "compatible", "reasons": ["lightweight on-device runtime; runs on any enrolled device"]}
 
     supported_os = J.loads(model.get("supported_os") or "[]")
     chipsets = [c.lower() for c in J.loads(model.get("supported_chipsets") or "[]")]

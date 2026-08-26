@@ -88,3 +88,24 @@ export function useApi<T = any>(path: string | null, deps: unknown[] = []) {
 
 export const get = (p: string) => request(p);
 export const post = (p: string, body?: unknown) => request(p, "POST", body ?? {});
+
+// FormData variant (browser sets the multipart boundary itself).
+export async function postForm(path: string, form: FormData) {
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: {
+      "X-Demo-Role": globalState.role,
+      "X-Tenant-ID": globalState.tenant,
+      ...(apiToken() ? { "X-Demo-Token": apiToken() } : {}),
+    },
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {}
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.json();
+}
