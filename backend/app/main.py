@@ -6,6 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import logging
+import sqlite3
+
 from . import seed, settings
 from .common import network_online, content_logging
 from .db import set_setting, get_setting
@@ -15,7 +18,13 @@ from .token_gate import TokenGateMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    seed.run_seed()
+    try:
+        seed.run_seed()
+    except sqlite3.OperationalError as exc:
+        # A locked database at boot means the PREVIOUS instance is still
+        # serving from this volume. Its catalog is at most one deploy old --
+        # start and serve rather than fail the whole rollout over an upsert.
+        logging.getLogger(__name__).warning("seed skipped: %s", exc)
     if get_setting("network_online") is None:
         set_setting("network_online", "1")
     yield

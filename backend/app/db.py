@@ -138,7 +138,11 @@ CREATE TABLE IF NOT EXISTS cost_config (
 
 def connect() -> sqlite3.Connection:
     Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.DB_PATH, check_same_thread=False)
+    # 15s busy timeout: deploys overlap on the shared volume, and since boot
+    # started writing the model catalog (seed.sync_models) a zero-timeout
+    # connection died with "database is locked" whenever the outgoing instance
+    # still held the file -- which is every rollout.
+    conn = sqlite3.connect(settings.DB_PATH, check_same_thread=False, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
