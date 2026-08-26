@@ -341,3 +341,24 @@ def test_analytics_summary_returns_200_with_expected_shape():
 def test_spa_fallback_json_404_for_api_accept_header():
     r = client.get("/inferenc", headers={"Accept": "application/json"})
     assert r.status_code == 404 and "detail" in r.json()
+
+
+def test_classifier_head_is_real_and_reported_as_real():
+    """The 1.6MB trained head ships in the image and must not degrade silently.
+
+    run_classifier_head catches every exception, so a missing scikit-learn
+    served rules-engine output under the head's name with the only evidence
+    buried in `explanation`. And active_mode() keyed off the GGUF path alone,
+    so a working head was reported to the viewer as "simulation".
+    """
+    from app import settings
+    from app.engine.runtimes import run_classifier_head
+
+    assert settings.runtime_status()["classifier_head"] is True
+    mode = settings.active_mode()
+    assert mode["mode"] == "real_local" and mode["runtime"] == "classifier_head"
+
+    res = run_classifier_head("my card was charged twice, refund please", None, "seed")
+    out = res[0] if isinstance(res, tuple) else res
+    body = out if isinstance(out, dict) else out.__dict__
+    assert "classifier head unavailable" not in str(body)
