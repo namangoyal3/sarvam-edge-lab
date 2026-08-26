@@ -16,6 +16,7 @@ RUNNERS = {
     "fixture": lambda t, h, s: R.run_fixture(t, h, s),
     "local": lambda t, h, s: R.run_local(t, h, s),
     "cloud_sim": lambda t, h, s: R.run_cloud_sim(t, h, s, CLOUD_COST),
+    "classifier": lambda t, h, s: R.run_classifier_head(t, h, s),
 }
 LANGS = ["en", "hi", "mixed-hi-en"]
 URGENCY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
