@@ -216,31 +216,28 @@ cost per successful workflow**, not cost per inference.
 
 ## Model accuracy: raising it honestly
 
-The current real-model number is low, and the README says so. Sarvam-1 IQ2_M
-(863 MB, 2-bit) fits the sub-1GB budget, but 2-bit quantization bounds task
-accuracy at 0.24 on the 26-case Indic triage set. Raw generation produced
-garbage JSON, so decoding now runs under a GBNF grammar: schema validity is
-1.0 by construction, not by luck. Critical-field gates (names, amounts, dates)
-still pass because extraction is deterministic. The system guarantee is
-"nothing wrong ships silently", not "the model is always right": any output
-below the policy `min_confidence` routes to the HITL human-review queue.
+Every runtime below was measured on the same 25-case hand-written eval:
 
-Levers to raise accuracy, with their price:
+| Runtime | Size | Task acc | Schema | p50 | Notes |
+|---|---|---|---|---|---|
+| Rules engine | ~20 KB | 1.00 | 1.0 | 51 ms | deterministic labeler; demo default |
+| **Classifier head (LinearSVC, char n-grams)** | **~1 MB** | **0.92** | **1.0** | **54 ms** | purpose-built; beats every LLM variant 2:1 |
+| Sarvam-1 FT IQ2_M | 863 MB | 0.24 | 1.0 | 1.4 s | confidence calibrated 0.90 |
+| Sarvam-1 FT IQ3_XXS (served locally) | 966 MB | 0.36 | 1.0 | 1.0 s | best sub-GB LLM |
+| Sarvam-1 FT Q4_K_M | 1.4 GB | 0.44 | 1.0 | 1.1 s | breaks the device budget |
+| Cloud simulator | — | synthetic | 1.0 | 1.3 s | not a real API |
 
-| Lever | Expected gain | Cost |
-|---|---|---|
-| Fine-tune on task data before quantization | Biggest jump; teach triage first, then compress | A training run plus a new artifact; re-run all evals |
-| Logit-forced classification | True softmax confidences; fixes the always-0.00 confidence problem | Runtime change only |
-| Requant to Q4_K_M (~1.3 GB) | Large accuracy lift | Breaks the 1GB device budget |
-| Few-shot exemplars in the prompt | Small lift, steadier category discipline | Free (a longer prompt) |
-| Self-consistency voting | Moderate lift on hard cases | About 3x latency per request |
+What the numbers teach:
 
-System-side levers keep weak-model output safe:
-
-- Rules x model agreement routing: ship when both engines agree, review when they diverge.
-- Confidence-gated HITL: already built; low confidence never auto-ships.
-- Gated evals as a regression contract: every change must clear category,
-  urgency, language, name, amount and date gates, not aggregate accuracy alone.
+- Raw generation from the 2-bit quant produced garbage JSON, so decoding runs
+  under a GBNF grammar: schema validity is 1.0 by construction, not by luck.
+- LoRA fine-tuning on distilled labels fixed format and confidence calibration;
+  it did NOT fix classification. Retraining on 2.4x more data moved accuracy
+  DOWN (36→28% at IQ3_XXS): the ceiling is quantization damage, not volume.
+- A ~1 MB purpose-built head beats every quantized LLM variant 2:1 on this
+  task — the argument for task-specific edges over shrunken generalists.
+- Critical-field gates (names, amounts, dates) pass everywhere because
+  extraction is deterministic. Low-confidence output routes to HITL review.
 
 > "Accuracy is bounded by the artifact. Trust is bounded by the system design.
 > Nothing wrong ships silently."
