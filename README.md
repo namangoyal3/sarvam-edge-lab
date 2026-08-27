@@ -49,9 +49,38 @@ cd sarvam-edge-lab
 
 ### Run the real sub-1GB model and make every number come from it
 
+The trained artifact ships as a GitHub release asset (git can't hold 966 MB):
+
 ```bash
+git clone https://github.com/namangoyal3/sarvam-edge-lab.git
+cd sarvam-edge-lab
+
+# 1. the model (966 MB, IQ3_XXS quant of a Sarvam-1 fine-tune)
+mkdir -p ~/sarvam-soup
+gh release download v3.0.0 -p '*.gguf' -D ~/sarvam-soup
+#   (no gh? grab it from the Releases page and put it in ~/sarvam-soup/)
+
+# 2. backend deps, incl. the local runtime
+cd backend && uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python -r requirements.txt llama-cpp-python
+cd ..
+
+# 3. optional: offline voice input (Hindi/Hinglish speech -> triage)
+brew install whisper-cpp ffmpeg
+mkdir -p ~/Models/whisper
+curl -L -o ~/Models/whisper/ggml-small.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+
+# 4. run everything (backend :8001 + UI :5173, fleet rolled, real traffic driven)
 bash scripts/local_model.sh          # add --keep-db to preserve existing records
 ```
+
+The green banner at the top of every page names the exact artifact being served.
+First voice request after boot takes ~14 s (model loads from disk); warm requests
+run ~0.7 s ASR + ~1.1 s triage.
+
+Phone: the same `.gguf` loads in llama.cpp-based iOS/Android apps (e.g.
+PocketPal) — airplane mode works; set repeat penalty ~1.15 (no grammar there).
 
 This does five things:
 
