@@ -143,7 +143,15 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
     rollouts = rows("SELECT * FROM update_rollouts")
     updates = [r for r in rollouts if r["kind"] == "update"]
     rollbacks = [r for r in rollouts if r["kind"] == "rollback"]
-    compat_ok = sum(1 for d in devices if (d.get("compatibility_detail") or {}).get("status") == "compatible")
+    # compute compatibility live -- the raw devices table only has the stale
+    # 'compatibility' column, which nothing updates after a model roll-out
+    from ..engine import compat as C
+    live_compat = {}
+    for d in devices:
+        m = row("SELECT * FROM models WHERE id=?", (d["model_id"],)) if d["model_id"] else None
+        live_compat[d["id"]] = C.check(d, m)["status"] if m else "unknown"
+    # "runnable" share: warnings (untested chipset, low-but-sufficient RAM) still run
+    compat_ok = sum(1 for v in live_compat.values() if v in ("compatible", "compatible_with_warning"))
 
     # ---- time series (last 7 days buckets by day-hour blocks)
     series = _series_sql(tid)
@@ -210,7 +218,7 @@ def analytics_summary(ctxinfo: dict = Depends(ctx)):
         "routing_split": {"local": local_n, "cloud_simulator": cloud_n, "queued_offline": queued_n},
         "policy_decisions": path_counts,
         "device_health": [{"id": d["id"], "status": d["status"], "battery": d["battery_pct"],
-                           "thermal": d["thermal"], "compat": d["compatibility"]} for d in devices],
+                           "thermal": d["thermal"], "compat": live_compat.get(d["id"], d["compatibility"])} for d in devices],
         "model_runtime_distribution": {
             "models": tally_sql("model_version") or {"?": total_n},
             "runtimes": tally_sql("runtime_version") or {"?": total_n}},
@@ -225,13 +233,17 @@ def _repeat_usage(tid: str) -> float:
 
 
 def _series_sql(tid: str):
-    days = rows("""SELECT substr(ts,1,10) day,
+    # Real-traffic-only databases usually hold hours, not days: daily buckets
+    # render as one dead point. Bucket hourly until there are 2+ distinct days.
+    ndays = row("SELECT COUNT(DISTINCT substr(ts,1,10)) n FROM telemetry_events WHERE tenant_id=?", (tid,))["n"]
+    bucket = "substr(ts,1,10)" if ndays >= 2 else "substr(ts,12,2) || ':00'"
+    days = rows(f"""SELECT {bucket} day,
                   SUM(execution_path='local') local,
                   SUM(execution_path='cloud_simulator') cloud_simulator,
                   SUM(execution_path='queued_offline') queued_offline,
                   SUM(success=0) errors,
                   AVG(CASE WHEN success=1 AND latency_ms>0 THEN latency_ms END) avg_latency
-                  FROM telemetry_events WHERE tenant_id=? GROUP BY day ORDER BY day""", (tid,))
+                  FROM telemetry_events WHERE tenant_id=? GROUP BY day ORDER BY min(ts)""", (tid,))
     out = []
     for r in days:
         o = dict(r)

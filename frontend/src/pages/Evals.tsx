@@ -119,11 +119,15 @@ export default function Evals() {
       )}
 
       <Card title="Run history">
-        <Table head={["run", "dataset", "mode", "accuracy", "schema valid", "p95", "started"]}>
+        <Table head={["run", "model", "mode", "accuracy", "schema valid", "p95", "started"]}>
           {(runs ?? []).map((r: any) => (
             <Row key={r.id}>
               <Cell mono>{r.id}</Cell>
-              <Cell mono>{r.dataset_id}</Cell>
+              <Cell mono>
+                <span className={String(r.model_id).includes("v3") ? "text-emerald-300" : ""}>
+                  {r.model_id ?? "—"}
+                </span>
+              </Cell>
               <Cell><Pill color={r.mode === "cloud_sim" ? "violet" : "blue"}>{r.mode}</Pill></Cell>
               <Cell mono>{r.metrics.task_accuracy}</Cell>
               <Cell mono>{r.metrics.schema_validity_rate}</Cell>

@@ -151,6 +151,37 @@ export default function App() {
           />
         </header>
 
+        {/* persistent model banner: WHAT is answering requests right now, on every page */}
+        {health && (
+          <div
+            className={`shrink-0 px-5 py-1.5 text-[11px] font-mono flex items-center gap-2 border-b ${
+              mode === "real_local"
+                ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-200"
+                : "bg-amber-500/10 border-amber-500/25 text-amber-200"
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${mode === "real_local" ? "bg-emerald-400" : "bg-amber-400"}`} />
+            {mode === "real_local" ? (
+              <>
+                <span className="font-semibold tracking-wide">REAL LOCAL MODEL</span>
+                <span className="text-emerald-300/90">
+                  {(health.model_path ?? "").split("/").pop()}
+                  {health.model_size_mb ? ` · ${health.model_size_mb} MB` : ""}
+                  {health.model_id ? ` · ${health.model_id}` : ""}
+                </span>
+                <span className="text-emerald-400/60">llama.cpp · on this machine · no network required</span>
+              </>
+            ) : (
+              <>
+                <span className="font-semibold tracking-wide">
+                  {mode === "simulation" ? "SIMULATION MODE" : "FIXTURE FALLBACK"}
+                </span>
+                <span className="opacity-80">{health.mode_reason}</span>
+              </>
+            )}
+          </div>
+        )}
+
         <main className="flex-1 p-5 max-w-[1400px] w-full mx-auto">
           {!health && (
             <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200 mb-4">
